@@ -1,4 +1,5 @@
 #pragma once
+#include "core/MediaTypes.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -31,7 +32,9 @@ public:
     void Flush();
 
 private:
+    static AVPixelFormat SelectHardwareFormat(AVCodecContext*, const AVPixelFormat* formats);
     AVCodecContext* m_context = nullptr;
+    FramePtr m_hardware_frame;
     AVRational m_time_base{0, 1};
 };
 } // namespace PLAYER
