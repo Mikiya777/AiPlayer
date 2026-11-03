@@ -1,0 +1,11 @@
+[requires]
+ffmpeg/4.4.4
+glm/cci.20230113
+inspireface/1.2.3
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
+[layout]
+cmake_layout

@@ -1,0 +1,30 @@
+build/
+cmake-build-*/
+.idea/
+tmp/
+output/
+简历文件/
+CMakeUserPresets.json
+.DS_Store
+cache/*
+!cache/README.md
+resources/videos/*
+!resources/videos/README.md
+resources/testVideos/*
+!resources/testVideos/README.md
+# 第三方二进制和模型单独准备，不提交到源码仓库。
+third_party/inspireface/sdk.zip
+third_party/inspireface/Pikachu
+*.recording-part
+# 本地笔记与 README 暂不上传，之后单独整理对外说明。
+*.md
+
+# 本地测试、练习、笔记及编辑器配置不发布。
+/tests/
+/docs/
+/examples/
+.clangd
+.vscode/
+.env
+.env.*
+*.log
