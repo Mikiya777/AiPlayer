@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "reader/Demuxer.h"
 #include <cerrno>
 #include <cmath>
@@ -57,6 +58,7 @@ const AVStream* Demuxer::GetStream(int index) const
 
 int Demuxer::ReadPacket(AVPacket* packet)
 {
+    PerformanceScope measure("demux_read");
     if (!packet) return AVERROR(EINVAL);
     av_packet_unref(packet);
     if (!m_context) return AVERROR(EINVAL);

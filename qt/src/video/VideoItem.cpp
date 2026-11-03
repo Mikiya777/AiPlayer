@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "video/VideoItem.h"
 #include "video/VideoRenderer.h"
 #include "writer/RecordingCadence.h"
@@ -44,6 +45,7 @@ public:
 
     void render() override
     {
+        PerformanceScope renderMeasure("render_callback_cpu");
         if (m_failed) return;
         // 没有待显示内容时不初始化，停止播放后不重复触发同一初始化故障。
         if (!m_ready && !m_frame && !m_recorder) {
@@ -67,7 +69,13 @@ public:
         }
         const bool newFrame=bool(m_frame);
         if (m_frame) {
+            const double now=Performance::Get().Active()?Performance::Now():0;
+            if(now && m_profile_last_frame)Performance::Get().Add("new_frame_submit_interval",now-m_profile_last_frame);
+            m_profile_last_frame=now;
+            Performance::Get().Add("rendered_new_frames_count",1);
             m_media_time=m_frame->pts/static_cast<double>(AV_TIME_BASE);
+            if(Performance::Get().Active())Performance::Get().Add("render_video_minus_last_audio",
+                (m_media_time-Performance::Get().m_audio_media_time.load(std::memory_order_relaxed))*1000);
             if (!m_renderer.Upload(*m_frame)) {
                 Fail(QStringLiteral("视频纹理上传失败：") + m_renderer.GetError());
                 return;
@@ -83,11 +91,13 @@ public:
             // 无滤镜且无需 SAR 尺寸转换时，直接共享原 RGBA 像素，避免 GPU 同步读回。
             if(m_raw_recording && m_current_frame &&
                m_current_frame->width==config.m_width && m_current_frame->height==config.m_height) {
+                PerformanceScope measure("record_capture_shared");
                 FramePtr copy(av_frame_clone(m_current_frame.get()));
                 if(copy)m_recorder->Submit(std::move(copy),captureTime);
                 else m_recorder->Fail("无法引用录制画面");
                 m_capture.reset();
             } else {
+            PerformanceScope measure("record_capture_gpu_readback");
             // 有滤镜时仍需录制渲染结果；只画视频，Qt 控件不会进入录制画面。
             if(!m_capture || m_capture->size()!=QSize(config.m_width,config.m_height))
                 m_capture=std::make_unique<QOpenGLFramebufferObject>(config.m_width,config.m_height);
@@ -140,6 +150,7 @@ private:
 
     FramePtr m_frame, m_current_frame;
     bool m_raw_recording=true;
+    double m_profile_last_frame=0;
     bool m_ready = false;
     bool m_clear = false;
 };

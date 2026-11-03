@@ -16,6 +16,8 @@ private:
     Muxer* m_muxer=nullptr;
     AVCodecContext* m_context=nullptr;
     SwsContext* m_scale=nullptr;
+    FramePtr m_frame;
+    bool m_use_libyuv=false;
     int m_stream=-1;
 };
 }

@@ -46,3 +46,13 @@ if(MSVC)
 else()
     target_compile_options(aiplayer_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# Optional local libyuv checkout; default builds keep using FFmpeg conversion.
+set(AIPLAYER_LIBYUV_SOURCE "" CACHE PATH "Path to an optional libyuv source checkout")
+if(AIPLAYER_LIBYUV_SOURCE)
+    set(LIBYUV_DISABLE_JPEG ON CACHE BOOL "" FORCE)
+    add_subdirectory("${AIPLAYER_LIBYUV_SOURCE}" "${CMAKE_BINARY_DIR}/libyuv" EXCLUDE_FROM_ALL)
+    target_include_directories(aiplayer_core PRIVATE "${AIPLAYER_LIBYUV_SOURCE}/include")
+    target_compile_definitions(aiplayer_core PRIVATE AIPLAYER_HAVE_LIBYUV=1)
+    target_link_libraries(aiplayer_core PRIVATE yuv)
+endif()

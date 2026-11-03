@@ -27,7 +27,7 @@ public:
 private:
     void Run();
     RecordingConfig m_config;
-    struct Entry {FramePtr m_frame;double m_time;};
+    struct Entry {FramePtr m_frame;double m_time;double m_profile_enqueue_ms;};
     std::mutex m_mutex;
     std::condition_variable m_wake;
     std::deque<Entry> m_queue;

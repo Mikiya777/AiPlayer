@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "sync/AVSynchronizer.h"
 #include <algorithm>
 #include <cerrno>
@@ -93,7 +94,9 @@ int AVSynchronizer::PushFrame(const AVFrame &frame, AVRational timeBase,
                                   ? static_cast<double>(frame.nb_samples) / frame.sample_rate
                                   : (frame.pkt_duration > 0 ? frame.pkt_duration * av_q2d(timeBase)
                                                             : m_config.m_default_video_duration);
+  queued.m_profile_enqueue_ms=Performance::Get().Active()?Performance::Now():0;
   queue.push_back(std::move(queued));
+  if(!audio)Performance::Get().Add("video_queue_frames",queue.size());
   lastTime = time;
   return 0;
 }
@@ -155,6 +158,7 @@ VideoDecision AVSynchronizer::PollVideo() {
     if (!stale || !nextReady) break;
     m_video_frames.pop_front();
     ++result.m_dropped_frames;
+    Performance::Get().Add("video_dropped_count",1);
   }
 
   result.m_difference_seconds = m_video_frames.front().m_time_seconds - *m_audio_clock;
@@ -165,6 +169,8 @@ VideoDecision AVSynchronizer::PollVideo() {
     return result;
   }
 
+  Performance::Get().Add("schedule_video_minus_audio",result.m_difference_seconds*1000);
+  if(m_video_frames.front().m_profile_enqueue_ms)Performance::Get().Add("video_queue_wait",Performance::Now()-m_video_frames.front().m_profile_enqueue_ms);
   result.m_action = VideoAction::kPresent;
   result.m_video = std::move(m_video_frames.front());
   m_video_frames.pop_front();

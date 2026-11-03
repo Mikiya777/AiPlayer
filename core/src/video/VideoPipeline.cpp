@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "video/VideoPipeline.h"
 #include <cerrno>
 #include <cstdlib>
@@ -11,6 +12,7 @@ void VideoPipeline::Close() { sws_freeContext(m_context); m_context = nullptr; }
 
 int VideoPipeline::Process(const AVFrame& input, FramePtr& output, int width, int height)
 {
+    PerformanceScope measure("video_rgba_convert");
     if (output.get() == &input) return AVERROR(EINVAL);
     output.reset();
     if (width == 0 && height == 0) { width = input.width; height = input.height; }

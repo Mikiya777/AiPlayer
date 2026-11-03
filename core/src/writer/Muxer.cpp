@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "writer/Muxer.h"
 #include <stdexcept>
 namespace PLAYER {
@@ -34,6 +35,7 @@ void Muxer::Write(AVPacket& packet,AVRational base,int stream)
 {
     av_packet_rescale_ts(&packet,base,m_context->streams[stream]->time_base);
     packet.stream_index=stream;
+    PerformanceScope measure("mux_write");
     CheckWrite(av_interleaved_write_frame(m_context,&packet),"写入音视频包");
 }
 void Muxer::Finish()

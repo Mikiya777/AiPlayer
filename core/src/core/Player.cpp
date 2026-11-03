@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "core/Player.h"
 #include "reader/FileReader.h"
 #include "video/VideoPipeline.h"
@@ -200,12 +201,14 @@ void Player::ProduceVideo(std::string path, uint64_t generation, double target) 
             FramePtr rgba;
             Check(pipeline.Process(frame, rgba), "RGBA 转换");
             // RGBA 自己持有像素内存和时间戳，可以安全离开解码回调。
+            const double waitStart=Performance::Get().Active()?Performance::Now():0;
             for (;;) {
                 CheckCancelled();
                 const int ret = m_sync.PushVideoFrame(*rgba, base, generation);
                 if (ret != AVERROR(EAGAIN)) { Check(ret, "视频入队"); break; }
                 RetryLater();
             }
+            if(waitStart)Performance::Get().Add("video_producer_backpressure",Performance::Now()-waitStart);
             std::lock_guard<std::mutex> lock(m_info_mutex);
             if (!m_first_video) {
                 const auto pts = rgba->pts != AV_NOPTS_VALUE ? rgba->pts : rgba->best_effort_timestamp;
@@ -266,6 +269,7 @@ int Player::Tick(TimedFrame &video) {
       return ret;
     }
   }
+  if(Performance::Get().Active())Performance::Get().m_audio_media_time.store(m_position,std::memory_order_relaxed);
   // 有音频时使用音频进度；纯视频/前导视频/音频尾后使用上述明确的外部时钟。
   int ret = m_sync.UpdateAudioClock(m_position, m_sync_generation);
   if (ret < 0) return FailCode(ret, "更新主时钟");

@@ -235,3 +235,33 @@ open build/Release/AiPlayer.app
 - [GLM](https://github.com/g-truc/glm)
 
 第三方组件、SDK 和模型遵循各自的许可条款。当前仓库未添加项目级 LICENSE 文件，不以 README 替代许可证声明。
+
+## 录制颜色转换性能对照
+
+macOS Apple Silicon 上，同一段 3840×2160、60fps SDR 素材，以 30fps 录制，
+预热后测量 30 秒，无滤镜、窗口 1200×780（DPR 2）。单轮对照结果：
+
+| 指标 | swscale（复用帧缓冲） | libyuv |
+| --- | ---: | ---: |
+| RGBA → YUV420P 平均耗时 | 15.70ms | 1.72ms |
+| 转换 P95 | 16.25ms | 1.78ms |
+| 整进程 CPU（100% 为一核心） | 349.10% | 306.24% |
+| 平均内存 footprint | 1214MiB | 1210MiB |
+
+本次收益集中在转换耗时和 CPU，尚未证明内存或播放流畅度改善。色块对照最大差异
+1/255，实际录制人工观察无明显差异；不承诺不同转换器逐像素一致。
+
+可选依赖 libyuv，验证版本为 `d088b8f2bd8f29badf5ba015a24d6c38dc69f23a`。
+将其源码放在仓库外或忽略目录，在原有 CMake 配置命令中增加：
+
+```bash
+-DAIPLAYER_LIBYUV_SOURCE=/absolute/path/to/libyuv
+```
+
+构建后，启动程序时设置环境变量 `AIPLAYER_RECORD_CONVERTER=libyuv` 启用。
+默认仍使用 swscale；libyuv 对照路径限定同尺寸 RGBA、偶数宽高，输出 BT.601 limited I420，
+不执行缩放或 HDR 色调映射。第三方源码不随仓库上传，保留其原有许可证。
+
+分段计时位于 `core/src/diagnostics/Performance.h`，默认关闭；设置 `AIPLAYER_PROFILE`
+并由本地测试入口调用 `Begin()` 后采集，`End(path)` 导出 CSV。调用耗时是 CPU 侧墙钟时间，
+不能解释为 GPU 执行耗时；采样本身有开销。测试驱动与原始报告保留在本地。

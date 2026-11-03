@@ -22,6 +22,7 @@ struct SyncConfig {
 // 自己持有 AVFrame 引用，解码器释放原帧后仍然有效。
 // m_time_seconds 已减去统一时间原点；AVFrame 原始 PTS 和数据保持不变。
 struct TimedFrame {
+  double m_profile_enqueue_ms = 0;
   FramePtr m_frame;
   AVRational m_time_base = {0, 1};
   double m_time_seconds = 0.0;

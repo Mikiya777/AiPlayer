@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "decoder/VideoDecoder.h"
 #include <cerrno>
 
@@ -39,13 +40,17 @@ int VideoDecoder::Open(const AVStream& stream)
 int VideoDecoder::SendPacket(const AVPacket* packet)
 {
     if (!m_context) return AVERROR(EINVAL);
+    PerformanceScope measure("video_decode_send");
     return avcodec_send_packet(m_context, packet);
 }
 
 int VideoDecoder::ReceiveFrame(AVFrame* frame)
 {
     if (!m_context || !frame) return AVERROR(EINVAL);
-    return avcodec_receive_frame(m_context, frame);
+    PerformanceScope measure("video_decode_receive");
+    const int ret=avcodec_receive_frame(m_context, frame);
+    if(ret==0)Performance::Get().Add("decoded_frames_count",1);
+    return ret;
 }
 
 void VideoDecoder::Flush()

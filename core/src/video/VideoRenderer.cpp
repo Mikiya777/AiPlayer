@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "video/VideoRenderer.h"
 #include <QOpenGLContext>
 #include <algorithm>
@@ -101,6 +102,7 @@ void main() {
 }
 bool VideoRenderer::Upload(const AVFrame& rgba)
 {
+    PerformanceScope measure("texture_upload_cpu");
     if (!CheckContext() || !m_program) return false;
     if (rgba.format != AV_PIX_FMT_RGBA || rgba.width <= 0 || rgba.height <= 0 ||
         !rgba.data[0] || std::abs(static_cast<int64_t>(rgba.linesize[0])) < static_cast<int64_t>(rgba.width) * 4) {
@@ -149,6 +151,7 @@ bool VideoRenderer::Upload(const AVFrame& rgba)
 }
 bool VideoRenderer::Draw(int framebufferWidth, int framebufferHeight)
 {
+    PerformanceScope measure("draw_submit_cpu");
     if (!CheckContext() || !m_program || framebufferWidth <= 0 || framebufferHeight <= 0) return false;
     glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND); glDisable(GL_SCISSOR_TEST); glDisable(GL_CULL_FACE);
     glViewport(0, 0, framebufferWidth, framebufferHeight);

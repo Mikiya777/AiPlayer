@@ -1,3 +1,4 @@
+#include "diagnostics/Performance.h"
 #include "writer/FileWriter.h"
 #include "writer/VideoEncoder.h"
 #include "writer/AudioEncoder.h"
@@ -65,7 +66,9 @@ void FileWriter::Submit(FramePtr frame,double time)
         {std::lock_guard<std::mutex> errorLock(m_error_mutex);m_error="录制编码跟不上，已终止录制，请降低视频分辨率";}
         m_stopping=true;m_wake.notify_one();return;
     }
-    m_queue.push_back({std::move(frame),time});m_bytes+=bytes;m_end=std::max(m_end,time);m_wake.notify_one();
+    m_queue.push_back({std::move(frame),time,Performance::Get().Active()?Performance::Now():0});m_bytes+=bytes;
+    Performance::Get().Add("record_queue_frames",m_queue.size());
+    Performance::Get().Add("record_queue_mib",m_bytes/1048576.0);m_end=std::max(m_end,time);m_wake.notify_one();
 }
 void FileWriter::Fail(const std::string& error)
 {
@@ -111,6 +114,7 @@ void FileWriter::Run()
                 entry=std::move(m_queue.front());m_queue.pop_front();
                 m_bytes-=static_cast<uint64_t>(std::abs(static_cast<int64_t>(entry.m_frame->linesize[0])))*entry.m_frame->height;
             }
+            if(entry.m_profile_enqueue_ms)Performance::Get().Add("record_queue_wait",Performance::Now()-entry.m_profile_enqueue_ms);
             if(!GetError().empty())throw std::runtime_error(GetError());
             const int64_t target=std::max<int64_t>(0,std::llround((entry.m_time-m_config.m_start)*30));
             if(!previous){
