@@ -16,8 +16,9 @@ resources/testVideos/*
 third_party/inspireface/sdk.zip
 third_party/inspireface/Pikachu
 *.recording-part
-# 本地笔记与 README 暂不上传，之后单独整理对外说明。
+# 过程笔记不上传；根目录 README 作为唯一对外说明。
 *.md
+!/README.md
 
 # 本地测试、练习、笔记及编辑器配置不发布。
 /tests/
