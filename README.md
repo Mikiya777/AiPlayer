@@ -265,3 +265,74 @@ macOS Apple Silicon 上，同一段 3840×2160、60fps SDR 素材，以 30fps �
 分段计时位于 `core/src/diagnostics/Performance.h`，默认关闭；设置 `AIPLAYER_PROFILE`
 并由本地测试入口调用 `Begin()` 后采集，`End(path)` 导出 CSV。调用耗时是 CPU 侧墙钟时间，
 不能解释为 GPU 执行耗时；采样本身有开销。测试驱动与原始报告保留在本地。
+
+## 分段测量与优化过程（2026-11-04）
+
+目标是降低 4K 播放同时录制的资源开销。先测量解码、像素转换、纹理上传、
+录制转换、编码、写盘和队列，再逐项替换实现。以下为同一素材、无滤镜、
+1200×780 窗口（DPR 2）、预热后 30 秒的单轮结果，并非通用性能保证。
+
+| 阶段 | 进程 CPU（100%=一核心） | 平均 footprint |
+| --- | ---: | ---: |
+| 软件解码 + swscale + libx264 | 349.10% | 1214MiB |
+| 改用 libyuv 录制转换 | 306.24% | 1210MiB |
+| 增加 VideoToolbox 解码，下载到 CPU 后渲染 | 247.47% | 1118MiB |
+| 增加 VideoToolbox 编码，并修正录制启动流程 | 34.43% | 1035MiB |
+
+### 从测量到修改
+
+1. **验证帧缓冲复用。** 复用成功且没有写时复制，但 RGBA→YUV 仍约15.7ms。
+   这次实验未带来明显性能收益，说明应优先优化转换路径。
+2. **替换录制颜色转换。** libyuv 将平均转换耗时降至约1.72ms。
+   色块对比最大差异1/255，用户检查实际录制未发现明显差异。
+3. **硬件解码。** 1800帧均走 VideoToolbox，送包调用平均约4.78ms，
+   硬件帧下载约0.23ms，随后转RGBA约1.68ms。该方案仍有 CPU 下载和纹理上传，不是零拷贝。
+4. **修正旧版 FFmpeg 的编码兼容问题。** 本机 FFmpeg 4.4.4 VideoToolbox 源码中，
+   `max_b_frames` 被强制覆盖为16，帧重排属性的布尔判断也可能误报。
+   本地补丁保留调用方设置、修正属性判断，并按 CMTime 的 timescale 换算 PTS/DTS。
+   应用保留输入输出时间戳核对，不直接改写异常 DTS 来掩盖错误。
+   两秒测试通过60帧完整解码、PTS/DTS、无B帧及输出时长检查。
+5. **修正启动时序。** 硬编初始化约95ms，全部准备完成约155ms。
+   原来准备期间即接收画面，64MiB队列仅能容纳约两张4K RGBA帧，容易溢出。
+   改为初始化完成后接收画面，以首张接受画面的媒体时间确定视频与音频共同起点。
+   此后30秒测试输出900个视频包，应用录制队列采样长度为1，正常保存。
+
+### 结果边界
+
+硬编提交平均约0.27ms，但提交到应用取得输出包平均约66.9ms，包含异步处理、
+队列及取包等待；不能宣称完整编码仅需0.27ms。进程 CPU 不包含全部系统服务和硬件功耗。
+硬编4K目标码率约40Mbps，而软件编码为CRF20，两者不是等画质测试。
+硬编最终输出仍需单独验收运动细节及音画同步。
+画面提交间隔P95仍约25ms，尚不能宣称显示节奏已改善；内存也仍有进一步分析空间。
+
+### 当前启用方式与复现限制
+
+默认路径仍是软件解码、swscale、libx264；实验优化通过启动环境变量选择：
+
+```bash
+AIPLAYER_VIDEO_DECODER=videotoolbox \
+AIPLAYER_RECORD_CONVERTER=libyuv \
+AIPLAYER_RECORD_ENCODER=h264_videotoolbox \
+AIPLAYER_RECORD_READBACK=direct \
+./build/Release/AiPlayer.app/Contents/MacOS/AiPlayer
+```
+
+先构建 `aiplayer_app`，测试程序更新不会自动更新这个 App。
+本地 FFmpeg 补丁库位于忽略目录 `tmp/ffmpeg-vt-fixed`，原 Conan 缓存保持不变；
+补丁准备脚本目前在本地 `tests/prepare-vt-patch.py`，未随公开仓库发布。
+因此公开仓库尚不能独立复现硬编补丁，需要后续整理第三方补丁及构建步骤，
+不能把本地实验状态视为已发布功能。重新生成 Conan 配置可能需要重新应用本地链接配置。
+
+### 贴纸录制的读回与刷新优化
+
+- `AIPLAYER_RECORD_READBACK=direct` 直接把 FBO 读入 RGBA 帧，以负行跨度处理方向，
+  省去中间 QImage 格式转换和整帧复制；未设置时仍保留原 QImage 路径。
+- 贴纸模式仅在检测结果及其对应画面准备好后请求刷新，避免输入到达、结果返回各刷新一次。
+  单轮 30 秒对照中，无新帧的绘制回调从 877 次降至 0 次；整体帧率收益仍受运行波动影响。
+  `AIPLAYER_STICKER_REFRESH=legacy` 仅用于恢复旧刷新方式进行对照。
+- `AIPLAYER_RECORD_READBACK=pbo` 保留为实验路径：最多三个 PBO，完成后才映射，
+  保留采集时间戳。组合对照中渲染回调 P95 从约 3.2–3.4ms 降至约 1.2ms，
+  但平均 footprint 增加约 89MiB，未获得稳定的整体流畅度收益，当前优先使用 direct。
+- 当前 macOS 27.0.1、Qt 6.11.1、OpenGL 组合强制 `QSG_RENDER_LOOP=threaded`
+  时在 AppKit 的 `NSOpenGLContext setView:` 主线程检查处退出，因此不启用该实验配置。
+  本项目统计的是画面提交时机，不是屏幕实际呈现时机，不能宣称已经达到稳定的 60fps 显示。
