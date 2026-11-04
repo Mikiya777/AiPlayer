@@ -1,127 +1,143 @@
-# AiPlayer
+# AiPlayer · 音视频特效播放器
 
-基于 **C++17、Qt Quick / QML、FFmpeg 和 OpenGL** 的本地音视频播放器，支持音画同步、保音调倍速播放、视频滤镜、人脸贴纸与画面录制。
+基于 **C++17、Qt Quick/QML、FFmpeg 和 OpenGL** 的本地桌面播放器，支持音画同步、保音调倍速、视频滤镜、人脸贴纸和 MP4 录制。
 
-项目围绕一条完整的媒体处理链路展开：从压缩数据读取、解码、音视频处理，到播放调度、设备输出，再到录制与封装。当前构建和验证平台为 **macOS Apple Silicon**。
+项目主要实现媒体链路的组织、资源管理、线程衔接、同步调度、特效合成与录制，并通过分段测量优化转换、刷新和缓存策略。人脸检测与关键点能力由 **InspireFace** 提供，不包含自研模型训练或大语言模型功能。
 
-> 名称中的 AI 指通过 InspireFace 接入的人脸检测、关键点与姿态能力。项目负责检测调度和贴纸合成，不包含自研模型训练或大语言模型功能。
+**当前验证平台：macOS Apple Silicon。** 已完成本机独立目录源码构建与人工功能验收，尚未提供可直接安装的发行包。
+
+[功能](#功能) · [架构与代码入口](#架构与代码入口) · [性能优化](#性能优化) · [构建与运行](#构建与运行) · [已知边界](#录制行为与已知边界)
 
 ## 功能
 
-| 功能 | 当前实现 |
+| 功能 | 实现范围 |
 | --- | --- |
-| 本地播放 | 打开本地音视频文件，添加文件或文件夹到播放列表，切换曲目、结束后播放下一项 |
-| 播放控制 | 播放、暂停、进度跳转、音量、静音、全屏 |
-| 倍速播放 | 0.5–2×，使用 FFmpeg `atempo` 进行保音调变速 |
-| 音画同步 | 音频设备处理进度驱动视频调度，过时画面按策略丢弃 |
-| 音频设备 | 跟随系统默认输出设备变化，重新协商格式并从当前位置恢复 |
-| 视频渲染 | OpenGL 3.3 Core，保持显示宽高比，处理非方形像素 |
-| 特效 | 垂直翻转、灰度、反相、人脸动态贴纸 |
-| 录制 | H.264 / AAC MP4，固定 30fps，录制视频画面与源文件对应音频 |
-| 错误反馈 | 读取、处理、设备和渲染错误反馈到界面；录制队列溢出时停止并报告 |
+| 本地播放 | 文件/文件夹播放列表、曲目切换、播完下一项 |
+| 播放控制 | 暂停恢复、进度跳转、音量、静音、全屏；0.5–2× 保音调倍速 |
+| 音画同步 | 以音频设备处理进度为主时钟，按视频 PTS 等待、交付和丢弃过时画面 |
+| 视频特效 | OpenGL 灰度、反相、垂直翻转；基于人脸关键点的动态贴纸 |
+| 画面录制 | H.264/AAC MP4，固定 30fps，保存特效画面和对应源音频 |
+| 设备与异常处理 | 跟随系统默认音频输出设备切换；读取、处理、设备、渲染及录制错误反馈到界面 |
 
-实际可播放的封装和编码格式取决于 FFmpeg 构建。当前视频路径面向 SDR；检测到 PQ / HLG HDR 输入时会拒绝处理，不将其直接当作 SDR 显示。
+2026-11-05 本机人工验收：播放、暂停恢复、跳转、开关贴纸、音画同步、短时录制与停止保存均正常；录制文件经 QuickTime 回放检查。此结果不替代多设备和长期稳定性测试。
 
-## 架构
+## 架构与代码入口
 
 ```mermaid
 flowchart TD
-    Source[本地媒体文件] --> AudioReader[音频读取器与解码器]
-    Source --> VideoReader[视频读取器与解码器]
-    AudioReader --> AudioPipeline[PCM 格式转换与重采样]
-    AudioPipeline --> Tempo[按需保音调变速]
-    Tempo --> AudioRenderer[音频队列与分批提交]
-    AudioRenderer --> Sink[QAudioSink 设备输出]
-    Sink --> Clock[音频播放进度]
-    VideoReader --> VideoPipeline[CPU 视频帧转 RGBA]
-    VideoPipeline --> Sync[有界视频队列与同步调度]
+    Source[本地媒体文件] --> AR[音频读取与解码线程]
+    Source --> VR[视频读取与解码线程]
+    AR --> PCM[PCM 重采样与按需变速]
+    PCM --> Audio[有界音频缓存与 QAudioSink]
+    Audio --> Clock[音频主时钟]
+    VR --> RGBA[视频帧转 CPU RGBA]
+    RGBA --> Queue[两帧视频队列]
+    Queue --> Sync[按主时钟调度]
     Clock --> Sync
-    Sync --> VideoItem[Qt Quick 画布与线程衔接]
-    VideoItem --> Renderer[OpenGL 上传与绘制]
-    Renderer --> Screen[显示]
-    VideoItem --> Detection[可选人脸检测]
-    Detection --> VideoItem
-    VideoItem --> RawCapture[无滤镜且尺寸一致时共享原始帧]
-    Renderer --> EffectCapture[有滤镜或需调整尺寸时读取渲染结果]
-    RawCapture --> Writer[有界录制队列]
-    EffectCapture --> Writer
-    Writer --> Encoder[视频编码与 MP4 封装]
-    Source --> AudioExport[收尾时提取并编码对应音频]
-    AudioExport --> Encoder
+    Sync --> Item[Qt 视频画布]
+    Item --> Face[可选检测线程：仅保留最新任务]
+    Face --> GL[原图与检测结果匹配后绘制]
+    Item --> GL
+    GL --> Screen[OpenGL 特效与显示]
+    Item --> Raw[无特效且尺寸一致：共享原始帧]
+    GL --> FBO[特效画面：FBO 读回]
+    Raw --> Writer[有界录制队列与编码线程]
+    FBO --> Writer
+    Source --> AudioExport[收尾时提取并编码对应源音频]
+    Writer --> MP4[MP4 封装]
+    AudioExport --> MP4
 ```
 
-### 模块划分
-
-| 模块 | 职责 | 主要入口 |
+| 关注点 | 代码入口 | 关键设计 |
 | --- | --- | --- |
-| 播放控制 | 启停工作线程、跳转、倍速、状态与时钟协调 | [Player.cpp](core/src/core/Player.cpp) |
-| 读取与解码 | 解封装、选流、音视频解码、取消与排空 | [FileReader.cpp](core/src/reader/FileReader.cpp)、[decoder](core/src/decoder) |
-| 音频处理 | 重采样、格式转换、时间戳连续性、变速与音频缓存 | [audio](core/src/audio) |
-| 播放同步 | 按音频时钟决定视频等待、显示或丢弃 | [AVSynchronizer.cpp](core/src/sync/AVSynchronizer.cpp) |
-| 视频处理 | 像素格式转换、色彩矩阵处理、纹理上传与绘制 | [video](core/src/video) |
-| 人脸特效 | SDK 生命周期、检测结果与贴纸位置 | [FaceStickerFilter.cpp](core/src/effects/FaceStickerFilter.cpp) |
-| 录制 | 有界队列、视频编码、源音频截取、文件封装 | [writer](core/src/writer) |
-| Qt 适配 | 设备输出、界面状态、渲染线程与检测线程衔接 | [PlaybackController.cpp](qt/src/ui/PlaybackController.cpp)、[VideoItem.cpp](qt/src/video/VideoItem.cpp) |
-| 界面 | 播放页、媒体列表、控制条与错误提示 | [Main.qml](qt/qml/Main.qml) |
+| 播放链路 | [Player.cpp](core/src/core/Player.cpp)、[FileReader.cpp](core/src/reader/FileReader.cpp) | 音视频独立生产；取消、错误报告和解码排空 |
+| 音频与同步 | [audio](core/src/audio)、[AVSynchronizer.cpp](core/src/sync/AVSynchronizer.cpp) | PCM 转换、音频设备时钟、等待/交付/丢帧；跳转后按代次拒绝旧数据 |
+| 界面调度 | [PlaybackController.cpp](qt/src/ui/PlaybackController.cpp)、[VideoItem.cpp](qt/src/video/VideoItem.cpp) | 播放推进与界面进度通知分频；检测结果准备好后请求刷新 |
+| 渲染与特效 | [VideoRenderer.cpp](core/src/video/VideoRenderer.cpp)、[FaceStickerFilter.cpp](core/src/effects/FaceStickerFilter.cpp) | GLSL/FBO、检测小图坐标映射、清屏归还大图存储 |
+| 录制链路 | [FileWriter.cpp](core/src/writer/FileWriter.cpp)、[VideoEncoder.cpp](core/src/writer/VideoEncoder.cpp)、[RecordingReadback.h](core/src/video/RecordingReadback.h) | 编码就绪后接收帧、容量限制、共享帧/直接读回及可选 PBO |
+| 构建与依赖 | [conanfile.txt](conanfile.txt)、[conan.lock](conan.lock)、[FFmpeg 补丁](third_party/ffmpeg/patches/4.4.4-aiplayer-videotoolbox.patch) | 固定依赖解析和 libyuv 提交；补丁在 FFmpeg 源码构建阶段应用 |
 
-### 线程与资源管理
+`AVFrame`、`AVPacket` 等资源使用配套释放器管理；跨线程保留帧时建立引用，不保存失效的借用地址。共享引用不等于端到端零拷贝。
 
-- **音视频独立生产**：两个读取器分别解码音频和视频，避免视频队列满时阻塞音频供给。代价是同一文件被解封装两次，目前仅面向可重复读取的本地文件。
-- **有界缓存与背压**：默认视频队列最多保留 4 帧，队列满时生产者等待；录制队列限制像素字节数，编码跟不上时报告错误，避免无上限积压。
-- **播放代次隔离**：停止或跳转后，旧代次的数据不能进入新播放会话。
-- **RAII 与帧引用**：`AVFrame`、`AVPacket` 使用配套释放器管理；跨线程保留图像时建立引用，不保存失效的借用地址。引用共享不等于整条链路零拷贝。
-- **设备与界面线程约束**：播放器控制及 `QAudioSink` 操作在 GUI 线程；OpenGL 操作在 Qt 渲染线程；录制编码和文件操作在独立工作线程。
-- **检测任务限制积压**：待处理人脸检测任务只保留最新一帧，结果与图像、播放代次关联。开启贴纸仍可能影响显示更新频率。
+音视频使用独立读取器，避免视频队列背压阻塞音频供给，代价是同一文件解封装两次。播放器控制与 `QAudioSink` 在 GUI 线程，OpenGL 在当前 Qt 渲染循环所属线程执行，检测和录制编码各自使用工作线程；当前 macOS/OpenGL 默认绘制也在 GUI 线程。
 
-## 录制行为
+## 性能优化
 
-录像保存的是视频画面，不包含 Qt 控件，也不是麦克风或系统声音录制。
+### 三项代表性对照
 
-- 录制固定为 **30fps**，仅支持 **1× 播放速度**；录制过程中禁止跳转与修改倍速。
-- 输出尺寸依据当前视频尺寸及像素宽高比确定，并调整为偶数。
-- 无滤镜、无贴纸且尺寸一致时，直接共享原始 RGBA 帧给编码线程，避免 GPU 读回。
-- 有滤镜、贴纸或需调整尺寸时，从独立 FBO 读取处理后的画面。
-- 视频按媒体时间生成固定帧率序列；供帧不足时会延用上一张画面。
-- 音频在收尾阶段从源文件的对应时间范围提取、转换并编码；无音频源生成纯视频。
-- 暂停不会按墙钟时间延长录像；切换系统音频输出设备会先结束当前录制。
-- 先写入 `.recording-part` 临时文件，正常完成封装后再生成目标文件。失败时保留临时文件，便于诊断。
+以下是开发阶段在 macOS Apple Silicon 上、指定 **3840×2160 / 60fps SDR** 素材的单轮对照。录制输出为 30fps，窗口 1200×780、DPR 2；预热后测量 30 秒。各行来自独立实验，不能拼接为一组统一基准。
 
-长时间录制结束后，音频提取与封装需要额外保存时间。高负载时仍可能发生播放卡顿、丢帧或录制失败。
+| 问题与改动 | 修改前 | 修改后 | 测量含义 |
+| --- | ---: | ---: | --- |
+| 录制 RGBA→YUV420P：swscale 改用 libyuv | 15.70 ms | 1.72 ms | 无特效录制，每帧转换平均耗时 |
+| 进度通知限频，减少主线程界面更新 | 8.78 ms | 2.79 ms | 贴纸＋录制，检测结果交付到 GUI 的延迟 P95 |
+| 视频队列四帧改为两帧 | 125.3 MiB | 62.4 MiB | 贴纸＋录制，队列图像数据量均值；同轮 resident 740.8→679.2 MiB |
 
-## 环境与依赖
+进度通知实验中，新画面提交间隔 P95 为 32.53→25.08 ms，同步丢帧 76→18 次，用户观察录制时播放更流畅。两帧队列对照中，帧间隔 P95 均约 25.69 ms，未观察到退步。
 
-| 项目 | 要求 / 当前验证版本 |
-| --- | --- |
-| 系统与架构 | macOS，Apple Silicon / arm64 |
-| 编译器 | 支持 C++17 的 Apple Clang |
-| CMake | 3.22 或更高 |
-| Conan | Conan 2 |
-| Qt | CMake 要求 6.5+；当前验证为 6.11.1 |
-| Qt 模块 | Core、Gui、Quick、QuickControls2、Multimedia、OpenGL |
-| FFmpeg | `4.4.4@aiplayer/vtfix`，仓库内 recipe 和 VideoToolbox 补丁 |
-| libyuv | 可选源码依赖，优化构建固定提交 `d088b8f2bd8f29badf5ba015a24d6c38dc69f23a` |
-| GLM | `cci.20230113` |
-| InspireFace | 1.2.3，macOS Apple Silicon SDK + Pikachu 模型 |
+**测量口径：**调用计时是 CPU 侧墙钟耗时，不是 GPU 执行时间；新画面提交和 `frameSwapped` 不等于屏幕实际呈现时刻。进程 CPU 的 100% 表示一个核心，且不覆盖全部硬件/系统服务消耗。footprint、resident、队列数据量和共享图形内存分别记录，不能直接相加，也不把不同场景的 1.7GB 与 800MB 写成统一降幅。
 
-Qt 单独安装，其他依赖通过 [conanfile.txt](conanfile.txt) 管理。InspireFace 使用仓库内的本地 Conan recipe，明确限定 macOS arm64；当前不是可直接在 Windows / Linux 上构建的发行版本。
+### 保留的改动与取舍
+
+- **硬件编解码：**优化启动脚本显式选择 VideoToolbox。硬解后仍下载到 CPU、转 RGBA 并上传纹理；这不是硬件帧直通。硬编与旧软件编码的码率策略不同，CPU 降幅不作为等画质对比。
+- **录制启动时序：**编码器和封装器就绪后才接收画面，以首张接受帧的媒体时间确定音视频共同起点，避免初始化期间填满录制队列。
+- **直接读回：**特效录制直接把 FBO 读入 RGBA 帧，以负行跨度处理上下方向，省去中间 QImage 转换和整帧复制。无特效且尺寸一致时共享原始帧，绕过读回。
+- **减少刷新：**贴纸模式仅在检测结果与对应图像准备好后请求刷新；播放仍以 5ms 定时器推进，进度条/时间文字最多约每 50ms 通知一次，暂停、跳转和结束时即时更新。
+- **小图检测：**使用 libyuv 将检测输入最长边缩至 960 像素，复用缓冲并映射回原图。输入缓冲约 31.6→2 MiB，播放和录制分辨率不变；本机素材人工检查未见贴纸位置、抖动或小脸识别明显退步。
+- **有界缓存与释放：**默认视频队列两帧，满时生产者等待；清屏将视频纹理存储缩至 1×1并归还 CPU 重排缓冲容量，保留小型绘制资源。
+- **PBO 保留为实验：**降低了渲染回调耗时，但对流畅度的收益不稳定，组合对照平均 footprint 增加约 89 MiB，因此优化启动脚本仍选直接读回。
+
+<details>
+<summary>未采用的尝试与验证边界</summary>
+
+- swscale 小图检测输入准备约14ms，高于全图复制；独立测试后改用 libyuv，真实流程准备耗时约0.92→0.55ms，整次检测约5.39→4.99ms。
+- macOS 27.0.1、Qt 6.11.1、OpenGL 组合强制 `QSG_RENDER_LOOP=threaded`，在 AppKit 的 `NSOpenGLContext setView:` 主线程检查处退出，未启用该配置。
+- 播放期间执行 `vmmap` 曾伴随约0.6秒停顿；后续系统分类只在停止后采集。
+- 三轮播放/停止中，不录制时 IOSurface 约71.5MiB和默认 malloc 区实际分配约58.2MiB保持稳定；含录制的另一次对照 IOSurface 增加约23.7MiB，实际 malloc 分配基本不变。尚不足以认定泄漏或排除长期增长。
+- 分配器主动回收诊断仅报告归还48KiB，未加入产品流程；没有强制清理系统/驱动缓存。
+- 短时成功不代表所有素材、设备和长时间负载下均流畅。原始报告与测试驱动保留本地，公开仓库以实现、提交历史、测量说明和人工验收记录为证据，不提供依赖未公开测试文件的运行指令。
+
+</details>
 
 ## 构建与运行
 
-### 1. 获取源码
+### 环境
+
+| 依赖 | 要求 / 验证版本 |
+| --- | --- |
+| 平台、编译器 | macOS Apple Silicon / arm64；Xcode Command Line Tools、支持 C++17 的 Apple Clang |
+| 构建工具 | CMake 3.22+，Conan 2（验证为 2.32.0） |
+| Qt | 6.5+，验证为 6.11.1；Core、Gui、Quick、QuickControls2、Multimedia、OpenGL |
+| 媒体依赖 | `ffmpeg/4.4.4@aiplayer/vtfix`、GLM `cci.20230113`、InspireFace 1.2.3 |
+| libyuv | 固定提交 `d088b8f2bd8f29badf5ba015a24d6c38dc69f23a` |
+
+Qt 单独安装。当前 InspireFace recipe 仅支持 macOS arm64，即使不使用贴纸，构建也需要准备该 SDK/模型。当前流程不是 Windows、Linux 或 Intel Mac 的构建说明。
+
+### 1. 获取源码并准备工具
 
 ```bash
 git clone https://github.com/Mikiya777/AiPlayer.git
 cd AiPlayer
 ```
 
-### 2. 准备 InspireFace SDK 与模型
+确保终端能找到 `git`、`cmake`、`conan`。若尚未安装 Conan，可在虚拟环境中安装：
 
-从 [InspireFace v1.2.3 官方发布页](https://github.com/HyperInspire/InspireFace/releases/tag/v1.2.3) 获取：
+```bash
+python3 -m venv tmp/conan-venv
+source tmp/conan-venv/bin/activate
+python -m pip install "conan==2.32.0"
+```
 
-- `inspireface-macos-apple-silicon-arm64-1.2.3.zip`：重命名为 `sdk.zip`，保持压缩包完整，不提前解压。
-- 发布页 **Model Package** 中的 `Pikachu` 模型文件：保存为 `Pikachu`。
+新开终端后重新激活相应环境。没有默认 Conan profile 时执行 `conan profile detect`，确认使用 Apple Clang 和 `armv8`；不要覆盖已有的自定义 profile。
 
-放置后的目录为：
+### 2. 准备 SDK 与模型
+
+从 [InspireFace v1.2.3 发布页](https://github.com/HyperInspire/InspireFace/releases/tag/v1.2.3) 下载：
+
+- `inspireface-macos-apple-silicon-arm64-1.2.3.zip`，重命名为 `sdk.zip`，无需解压。
+- 发布页 Model Package 中的 `Pikachu` 模型文件。
+
+放入以下目录，二进制和模型不随仓库上传：
 
 ```text
 third_party/inspireface/
@@ -130,303 +146,96 @@ third_party/inspireface/
 └── Pikachu
 ```
 
-SDK 和模型不随仓库分发，但当前默认构建需要它们，即使暂时不使用贴纸功能。Recipe 会校验以下 SHA-256：
+Recipe 校验 SHA-256：
 
 ```text
-sdk.zip
-96effaacc76e410b5dcec96d30abb136aea7a4126ea1e988a40e1a1b88ecde3a
-
-Pikachu
-5037ba1f49905b783a1c973d5d58b834a645922cc2814c8e3ca630a38dc24431
+sdk.zip  96effaacc76e410b5dcec96d30abb136aea7a4126ea1e988a40e1a1b88ecde3a
+Pikachu  5037ba1f49905b783a1c973d5d58b834a645922cc2814c8e3ca630a38dc24431
 ```
 
-如果下载内容与校验值不一致，应先核对版本与文件来源，不要直接跳过校验。
+### 3. 准备依赖并编译
 
-### 3. 安装 Conan 依赖
-
-先安装 Xcode Command Line Tools、CMake、Conan 2 和对应 Qt 模块。初次使用 Conan、尚未创建默认 profile 时执行：
-
-```bash
-conan profile detect
-```
-
-确认 profile 使用本机 Apple Clang 和 `armv8` 架构，然后执行：
+将 Qt 路径替换为实际安装目录：
 
 ```bash
 bash scripts/prepare-deps.sh
-```
-
-脚本首先检查 SDK/模型，准备固定提交的 libyuv，然后从源码创建
-`ffmpeg/4.4.4@aiplayer/vtfix` 和 InspireFace 包。FFmpeg recipe 来自 Conan Center
-的固定副本，保留原有兼容补丁，增加本项目已测试的 VideoToolbox 修改。
-补丁在源码构建阶段应用，不再修改 Conan 生成文件或替换缓存静态库中的对象。
-本地自定义引用不会覆盖原版 `ffmpeg/4.4.4`。
-
-libyuv 默认通过 GitHub 镜像获取，校验 Git 提交，并拒绝已修改的源码；也可指定仓库：
-`LIBYUV_REPOSITORY=https://chromium.googlesource.com/libyuv/libyuv`。
-已有相同提交的干净源码可复用，但准备和编译两步必须传入相同目录，例如：
-
-```bash
-LIBYUV_SOURCE="$PWD/tmp/libyuv-source" bash scripts/prepare-deps.sh
-```
-
-首次编译可能较长，需要网络。脚本不安装系统工具，也不包含 SDK/模型或已编译库。
-2026-11-05 已在本机完成依赖源码构建和独立目录应用编译，普通播放验证通过。
-新构建已完成本机人工功能验收；尚未完成全新电脑或完全空缓存构建验证。
-
-### 4. 在独立目录编译应用
-
-```bash
 bash scripts/build-repro.sh "/path/to/Qt/6.11.1/macos"
 ```
 
-若上一步复用了已有 libyuv 源码：
+准备脚本获取固定提交的 libyuv，从源码构建带补丁的独立 FFmpeg 包及 InspireFace 包；构建脚本使用仓库的 `conan.lock`，在 `build/repro` 生成依赖配置，输出 `build/repro/app/AiPlayer.app`。首次构建需要网络并可能耗时较长。
+
+FFmpeg 补丁修正旧版适配层对 `max_b_frames` 的覆盖、重排属性判断，以及按 `CMTime.timescale` 换算 PTS/DTS；保留输入输出时间戳核对。补丁在源码构建阶段应用，不修改缓存静态库或临时覆盖 Conan 生成文件。来源与许可见 [NOTICE](third_party/ffmpeg/NOTICE)。
+
+<details>
+<summary>复用 libyuv 源码或更换下载源</summary>
+
+默认目录为 `third_party/libyuv`，通过 GitHub 镜像获取并校验提交。可用 `LIBYUV_REPOSITORY=https://chromium.googlesource.com/libyuv/libyuv` 改用上游仓库。
+
+已有相同提交的干净源码时，两步传入相同目录：
 
 ```bash
+LIBYUV_SOURCE="$PWD/tmp/libyuv-source" bash scripts/prepare-deps.sh
 LIBYUV_SOURCE="$PWD/tmp/libyuv-source" \
   bash scripts/build-repro.sh "/path/to/Qt/6.11.1/macos"
 ```
 
-Conan 生成文件位于 `build/repro` 下，应用单独在 `build/repro/app` 构建，
-不覆盖原 `build/Release` 实验环境。主程序目标不依赖未公开的本地测试文件。
-顶层依赖、FFmpeg 源码和 libyuv 提交已固定，传递依赖仍存在版本范围；
-完成首次成功构建后生成 Conan lockfile，以固定依赖及 recipe 解析结果：
+脚本拒绝提交不匹配或已修改的源码。Conan 锁文件固定依赖/recipe 解析结果，不包含 Qt SDK，也不替代编译器和 profile 的版本记录。
 
-```bash
-conan lock create . -s build_type=Release --no-remote --lockfile-out=conan.lock
-```
+</details>
 
-将 `conan.lock` 与源码一起保存；后续构建脚本会显式使用它。该锁不包含 Qt SDK，
-也不替代编译器、Conan profile 和 libyuv 提交的版本记录。
-
-### 5. 启动优化路径
+### 4. 启动优化配置
 
 ```bash
 bash scripts/run-player.sh
+# 也可在命令末尾追加本地视频路径
+bash scripts/run-player.sh "/absolute/path/to/video.mp4"
 ```
 
-可以在命令末尾追加本地视频路径。启动脚本固定开启已验证的优化参数，也允许通过同名
-环境变量覆盖。当前硬件路径通过参数显式开启，并不是自动失败回退。
-直接 `open build/repro/app/AiPlayer.app` 仍使用软件编解码/原读回默认配置。
+启动脚本选择 VideoToolbox 编解码、libyuv 录制转换与直接读回。**直接双击或 `open` App 不会自动使用这组启动参数**，程序本身仍默认软件编解码、swscale 和原 QImage 读回；当前未实现硬件路径失败后的自动回退。
 
-构建过程会将 InspireFace 动态库和模型复制到应用包。当前 `.app` 是开发构建，尚未完成面向其他电脑分发所需的 Qt 部署、签名与公证。
+<details>
+<summary>对照参数与常见问题</summary>
 
-### 常见构建问题
+| 环境变量 | 可选值 | 当前用途 |
+| --- | --- | --- |
+| `AIPLAYER_VIDEO_DECODER` | `software` / `videotoolbox` | 启动脚本选择硬解 |
+| `AIPLAYER_RECORD_ENCODER` | `libx264` / `h264_videotoolbox` | 启动脚本选择硬编 |
+| `AIPLAYER_RECORD_CONVERTER` | `swscale` / `libyuv` | 启动脚本选择 libyuv；当前录制转换限定同尺寸偶数宽高 RGBA，输出 BT.601 limited I420 |
+| `AIPLAYER_RECORD_READBACK` | `qimage` / `direct` / `pbo` | 启动脚本选择 direct；pbo 为可选实验 |
+| `AIPLAYER_VIDEO_QUEUE_FRAMES` | `2` / `4` | 默认两帧，4 恢复旧容量 |
+| `AIPLAYER_FACE_INPUT` | `full` / `libyuv-960` / `960` | 有 libyuv 的构建默认小图；960 为 swscale 对照 |
+| `AIPLAYER_PROGRESS_NOTIFY` | `legacy` | 恢复旧进度通知频率；默认约50ms限频 |
+| `AIPLAYER_STICKER_REFRESH` | `legacy` | 恢复输入和检测结果各请求刷新的旧行为 |
+| `AIPLAYER_CLEAR_STORAGE` | `retain` | 恢复清屏保留大图存储的旧行为 |
 
-| 现象 | 检查方向 |
-| --- | --- |
-| 找不到 Qt6 或某个 Qt 模块 | `CMAKE_PREFIX_PATH` 是否指向 Qt 的 `macos` 目录，对应模块是否安装 |
-| 找不到 `inspireface/1.2.3` | 是否先准备 SDK / 模型并成功执行本地 `conan create` |
-| InspireFace 校验失败 | 是否使用指定版本的 arm64 SDK 与匹配的 Pikachu 模型 |
-| 找不到 `conan-release` preset | 是否在项目根目录执行过 `conan install`，是否使用单配置 Release 构建 |
-| 在 Intel Mac 或其他系统构建失败 | 当前 InspireFace recipe 仅支持 macOS arm64，需要另做平台适配 |
+启动脚本允许同名变量覆盖，例如 `AIPLAYER_VIDEO_DECODER=software bash scripts/run-player.sh`。
 
-## 验证与性能迭代
+- 找不到 Conan：激活安装它的 Python 环境，先运行 `conan --version`。
+- 找不到 Qt 模块：检查传入的 `macos` 目录以及所需模块是否安装。
+- SDK/模型校验失败：核对指定版本、架构和文件来源，不跳过校验。
+- 找不到自定义 FFmpeg 或 InspireFace 包：先成功执行 `scripts/prepare-deps.sh`。
+- 硬件初始化失败：确认设备、编码格式和 FFmpeg 构建支持情况，必要时显式选择软件路径；切换实现后不沿用原性能结论。
 
-基线版本 `2684255` 已包含此前的实现与优化，后续性能测量和优化将通过独立提交记录。基线提交之前的修改不作为逐次 Git 历史展示。
+</details>
 
-已有实现包括：
+## 录制行为与已知边界
 
-- 视频队列由较大的预读缓存收敛到 4 帧，限制 RGBA 图像驻留。
-- 录制按媒体时间选择 30fps 画面，避免对 60fps 输入逐帧采集。
-- 软件视频编码使用低延迟配置，减少多帧前瞻缓存。
-- 无滤镜录制共享原始像素缓冲；正行跨度纹理上传不再额外重排整幅图像。
+- 录制的是视频画面，不包含 Qt 控件，不录制麦克风或系统声音；音频来自源文件对应片段。
+- 固定30fps、仅支持1×；录制中禁止跳转和修改倍速，输出依据源尺寸与像素宽高比调整为偶数。
+- 视频按媒体时间生成固定帧率序列，供帧不足时延用上一帧；音频在收尾时提取、编码并封装，因此停止后可能需要保存时间。无音频源输出纯视频。
+- 暂停不按墙钟延长录像；切换默认音频输出设备会先结束录制。
+- 录制队列限制为64MiB，编码跟不上时停止并报告；先写 `.recording-part`，正常封装后生成目标文件，失败保留临时文件。
 
-开发阶段已执行核心回归、真实 OpenGL 读回检查和短时 4K 播放录制验证；已提交源码的独立副本也在本机已安装依赖环境下完成构建。测试和过程笔记保留在本地，不包含在此公开仓库中，因此这里不提供依赖未发布测试文件的运行命令。
+仅面向可重复读取的本地 SDR 媒体；实际格式支持取决于 FFmpeg 构建。PQ/HLG HDR 当前会拒绝处理，未实现 HDR 色调映射、完整显示色彩管理、网络流播放或端到端零拷贝。
 
-短时成功录制不等于长期高负载下始终流畅。目前不公布跨播放器性能排名，也不把不同统计口径、不同场景的内存数字当作统一基准。
+开发构建已在本机完成依赖源码编译、独立目录构建与人工验收；尚未完成全新电脑/完全空缓存复现、多设备长期测试、Qt 运行库部署、签名与公证。普通播放约800MB、贴纸/录制约1GB等观察不作为统一性能基准，也不承诺所有设备实时4K录制。
 
-下一步计划：
+## 第三方与许可
 
-- [x] 分段统计解码、RGBA 转换、排队、上传、录制采集、编码及写盘耗时。
-- [x] 对比只播放与同时录制，记录 P95、帧提交间隔、积压和音画时钟差。
-- [x] 评估硬件编解码、缓冲复用和异步读回；YUV 直通渲染暂不实施。
-- [ ] 补充可公开的演示视频与条件明确的前后对比结果。
+- [FFmpeg](https://ffmpeg.org/)：解封装、编解码、重采样、变速；[本地 recipe 与补丁说明](third_party/ffmpeg/NOTICE)。新 recipe 禁用未使用的 FDK-AAC/SSL，但仍启用 libx264 等 GPL 组件。
+- [Qt](https://www.qt.io/)：界面、事件循环和音频设备接口。
+- [libyuv](https://chromium.googlesource.com/libyuv/libyuv/)：CPU 像素转换与检测输入缩放。
+- [InspireFace](https://github.com/HyperInspire/InspireFace)：人脸检测与关键点；SDK/模型单独准备。
+- [GLM](https://github.com/g-truc/glm)：数学计算。
 
-## 当前限制
-
-- 仅支持本地媒体，未实现网络流播放。
-- 视频主路径仍是软件解码、CPU 转 RGBA 与 OpenGL 上传；没有完整硬件帧直通或端到端零拷贝。
-- 程序直接启动默认使用软件编码；优化启动脚本显式选择补丁版 VideoToolbox 硬编码。
-- 有特效录制仍会同步读取 GPU 画面；高分辨率下可能阻塞显示。
-- 大负载下仍有流畅度与音画同步改善空间；未承诺所有设备上的实时 4K 录制。
-- 尚未完成 HDR 色调映射与完整的显示色彩管理，颜色可能与系统播放器存在差异。
-- 公开仓库尚未提供可直接安装的发行包。
-
-## 第三方组件与实现范围
-
-本项目使用 FFmpeg 提供解封装、编解码、重采样和变速滤镜，使用 Qt 提供界面和音频设备接口，使用 InspireFace 提供人脸检测与关键点能力。项目代码主要实现这些能力之间的组织、资源管理、线程衔接、同步调度、界面交互、特效合成与录制流程。
-
-- [FFmpeg](https://ffmpeg.org/)
-- [Qt](https://www.qt.io/)
-- [InspireFace](https://github.com/HyperInspire/InspireFace)
-- [GLM](https://github.com/g-truc/glm)
-
-第三方组件、SDK 和模型遵循各自的许可条款。当前仓库未添加项目级 LICENSE 文件，不以 README 替代许可证声明。
-
-## 录制颜色转换性能对照
-
-macOS Apple Silicon 上，同一段 3840×2160、60fps SDR 素材，以 30fps 录制，
-预热后测量 30 秒，无滤镜、窗口 1200×780（DPR 2）。单轮对照结果：
-
-| 指标 | swscale（复用帧缓冲） | libyuv |
-| --- | ---: | ---: |
-| RGBA → YUV420P 平均耗时 | 15.70ms | 1.72ms |
-| 转换 P95 | 16.25ms | 1.78ms |
-| 整进程 CPU（100% 为一核心） | 349.10% | 306.24% |
-| 平均内存 footprint | 1214MiB | 1210MiB |
-
-本次收益集中在转换耗时和 CPU，尚未证明内存或播放流畅度改善。色块对照最大差异
-1/255，实际录制人工观察无明显差异；不承诺不同转换器逐像素一致。
-
-可选依赖 libyuv，验证版本为 `d088b8f2bd8f29badf5ba015a24d6c38dc69f23a`。
-将其源码放在仓库外或忽略目录，在原有 CMake 配置命令中增加：
-
-```bash
--DAIPLAYER_LIBYUV_SOURCE=/absolute/path/to/libyuv
-```
-
-构建后，启动程序时设置环境变量 `AIPLAYER_RECORD_CONVERTER=libyuv` 启用。
-默认仍使用 swscale；libyuv 对照路径限定同尺寸 RGBA、偶数宽高，输出 BT.601 limited I420，
-不执行缩放或 HDR 色调映射。第三方源码不随仓库上传，保留其原有许可证。
-
-分段计时位于 `core/src/diagnostics/Performance.h`，默认关闭；设置 `AIPLAYER_PROFILE`
-并由本地测试入口调用 `Begin()` 后采集，`End(path)` 导出 CSV。调用耗时是 CPU 侧墙钟时间，
-不能解释为 GPU 执行耗时；采样本身有开销。测试驱动与原始报告保留在本地。
-
-## 分段测量与优化过程（2026-11-04）
-
-目标是降低 4K 播放同时录制的资源开销。先测量解码、像素转换、纹理上传、
-录制转换、编码、写盘和队列，再逐项替换实现。以下为同一素材、无滤镜、
-1200×780 窗口（DPR 2）、预热后 30 秒的单轮结果，并非通用性能保证。
-
-| 阶段 | 进程 CPU（100%=一核心） | 平均 footprint |
-| --- | ---: | ---: |
-| 软件解码 + swscale + libx264 | 349.10% | 1214MiB |
-| 改用 libyuv 录制转换 | 306.24% | 1210MiB |
-| 增加 VideoToolbox 解码，下载到 CPU 后渲染 | 247.47% | 1118MiB |
-| 增加 VideoToolbox 编码，并修正录制启动流程 | 34.43% | 1035MiB |
-
-### 从测量到修改
-
-1. **验证帧缓冲复用。** 复用成功且没有写时复制，但 RGBA→YUV 仍约15.7ms。
-   这次实验未带来明显性能收益，说明应优先优化转换路径。
-2. **替换录制颜色转换。** libyuv 将平均转换耗时降至约1.72ms。
-   色块对比最大差异1/255，用户检查实际录制未发现明显差异。
-3. **硬件解码。** 1800帧均走 VideoToolbox，送包调用平均约4.78ms，
-   硬件帧下载约0.23ms，随后转RGBA约1.68ms。该方案仍有 CPU 下载和纹理上传，不是零拷贝。
-4. **修正旧版 FFmpeg 的编码兼容问题。** 本机 FFmpeg 4.4.4 VideoToolbox 源码中，
-   `max_b_frames` 被强制覆盖为16，帧重排属性的布尔判断也可能误报。
-   本地补丁保留调用方设置、修正属性判断，并按 CMTime 的 timescale 换算 PTS/DTS。
-   应用保留输入输出时间戳核对，不直接改写异常 DTS 来掩盖错误。
-   两秒测试通过60帧完整解码、PTS/DTS、无B帧及输出时长检查。
-5. **修正启动时序。** 硬编初始化约95ms，全部准备完成约155ms。
-   原来准备期间即接收画面，64MiB队列仅能容纳约两张4K RGBA帧，容易溢出。
-   改为初始化完成后接收画面，以首张接受画面的媒体时间确定视频与音频共同起点。
-   此后30秒测试输出900个视频包，应用录制队列采样长度为1，正常保存。
-
-### 结果边界
-
-硬编提交平均约0.27ms，但提交到应用取得输出包平均约66.9ms，包含异步处理、
-队列及取包等待；不能宣称完整编码仅需0.27ms。进程 CPU 不包含全部系统服务和硬件功耗。
-硬编4K目标码率约40Mbps，而软件编码为CRF20，两者不是等画质测试。
-硬编最终输出仍需单独验收运动细节及音画同步。
-画面提交间隔P95仍约25ms，尚不能宣称显示节奏已改善；内存也仍有进一步分析空间。
-
-### 当前启用方式与复现限制
-
-默认路径仍是软件解码、swscale、libx264；实验优化通过启动环境变量选择：
-
-```bash
-AIPLAYER_VIDEO_DECODER=videotoolbox \
-AIPLAYER_RECORD_CONVERTER=libyuv \
-AIPLAYER_RECORD_ENCODER=h264_videotoolbox \
-AIPLAYER_RECORD_READBACK=direct \
-./build/Release/AiPlayer.app/Contents/MacOS/AiPlayer
-```
-
-先构建 `aiplayer_app`，测试程序更新不会自动更新这个 App。
-旧实验的 FFmpeg 补丁库位于 `tmp/ffmpeg-vt-fixed`，其 `build/Release` 链接方式
-仅作为历史环境保留。正式源码补丁、独立 Conan recipe 和准备脚本现已纳入仓库，
-新的复现入口为 `scripts/prepare-deps.sh` 与 `scripts/build-repro.sh`，已通过本机源码构建与独立目录应用编译；新构建已通过本机人工功能验收。
-当前旧实验构建启用了 `nonfree`；新 recipe 禁用项目未使用的 FDK-AAC 和 SSL，
-音频录制继续使用原先的 FFmpeg 内置 `aac`。新配置仍启用 libx264 等 GPL 组件，
-不意味着整体二进制是 MIT/LGPL-only。第三方许可保留在各自源码/包中，FFmpeg
-recipe 的来源和修改说明见 `third_party/ffmpeg/NOTICE`。本阶段不分发二进制安装包。
-
-### 贴纸录制的读回与刷新优化
-
-- `AIPLAYER_RECORD_READBACK=direct` 直接把 FBO 读入 RGBA 帧，以负行跨度处理方向，
-  省去中间 QImage 格式转换和整帧复制；未设置时仍保留原 QImage 路径。
-- 贴纸模式仅在检测结果及其对应画面准备好后请求刷新，避免输入到达、结果返回各刷新一次。
-  单轮 30 秒对照中，无新帧的绘制回调从 877 次降至 0 次；整体帧率收益仍受运行波动影响。
-  `AIPLAYER_STICKER_REFRESH=legacy` 仅用于恢复旧刷新方式进行对照。
-- `AIPLAYER_RECORD_READBACK=pbo` 保留为实验路径：最多三个 PBO，完成后才映射，
-  保留采集时间戳。组合对照中渲染回调 P95 从约 3.2–3.4ms 降至约 1.2ms，
-  但平均 footprint 增加约 89MiB，未获得稳定的整体流畅度收益，当前优先使用 direct。
-- 当前 macOS 27.0.1、Qt 6.11.1、OpenGL 组合强制 `QSG_RENDER_LOOP=threaded`
-  时在 AppKit 的 `NSOpenGLContext setView:` 主线程检查处退出，因此不启用该实验配置。
-  本项目统计的是画面提交时机，不是屏幕实际呈现时机，不能宣称已经达到稳定的 60fps 显示。
-
-### 人脸检测输入缩放
-
-启用可选 libyuv 依赖的构建，默认在检测工作线程把输入最长边缩到 960 像素，
-不放大小图；播放与录制仍使用原始尺寸。关键点按实际缩放宽高映射回原图。
-未启用 libyuv 的构建默认继续使用全尺寸输入。
-`AIPLAYER_FACE_INPUT=full` 可恢复原方案，`libyuv-960` 显式选择小图，
-`960` 保留为 swscale 性能对照。
-
-4K 素材单轮 30 秒对照：图像准备平均 0.92→0.55ms，整次检测 5.39→4.99ms，
-平均 footprint 1141→1112MiB，进程 CPU 69.9%→66.3%。检测输入缓冲约 31.6→2MiB。
-用户对这段素材的视觉检查未发现贴纸位置、大小、抖动或远处小脸识别明显退步；
-这不代表跨素材检测准确率已完成验证。画面提交帧率的单轮变化不作为稳定收益保证。
-
-先前的 swscale 小图实验在同一流程中准备耗时约 14ms，高于全图复制，故未采用为默认。
-独立合成图测试验证了 libyuv 缩放后的 RGBA 通道、方向、行填充和负行跨度；
-其性能结果只用于选择实现，不能替代完整播放测试。
-
-### 分离播放推进与界面进度通知
-
-播放控制器继续用 5ms 定时器推进音频供给和同步判断，进度条/时间文字的
-`PositionChanged` 通知独立限制为至少间隔 50ms；进度 getter 每次推进仍更新，
-暂停、跳转和播放结束即时通知。`AIPLAYER_PROGRESS_NOTIFY=legacy` 可恢复旧通知频率做对照。
-
-同一 4K 素材、贴纸+录制、libyuv 小图检测和 direct 读回的单轮 30 秒对照：
-进度通知 2559→535 次，窗口 frameSwapped 信号 3358→3099 次，
-新画面提交 1686→1769 次，同步丢帧 76→18 次，新画面间隔 P95 32.53→25.08ms，
-检测结果 GUI 交付延迟 P95 8.78→2.79ms。用户观察录制时播放流畅度明显改善。
-CPU 66.3%→65.5%，平均 footprint 1130→1082MiB；这些资源变化属于单轮观测，
-不能宣称为稳定收益。frameSwapped 和新画面提交均不能替代屏幕实际呈现时间测量。
-
-### 内存测量与有限优化（2026-11-05）
-
-播放器默认视频队列从四帧改为两帧，`AIPLAYER_VIDEO_QUEUE_FRAMES=4` 可恢复旧容量。
-同一 4K 贴纸录制对照中，队列数据量约 125.3→62.4MiB，进程 resident
-约 740.8→679.2MiB；该轮帧间隔 P95 均约25.69ms，未观察到流畅度退步。
-这些是单素材、单轮观测，不构成所有媒体和设备上的保证。
-
-清屏默认把视频纹理存储缩为1×1并归还 CPU 重排缓冲容量，保留小型绘制资源；
-后续上传按新尺寸重建像素存储。`AIPLAYER_CLEAR_STORAGE=retain` 可做旧策略对照。
-停止后1秒观测到额外约33MiB的 footprint 回落，但实际回收时机仍由驱动决定。
-
-内存统计区分 CPU 队列数据量、共享帧引用、GPU 颜色存储理论大小与进程 footprint/resident，
-不能简单求和。播放中运行 vmmap 曾伴随约0.6秒停顿，后续系统分类只在停止后采集。
-主动调用 malloc_zone_pressure_relief 的诊断仅释放48KiB，因此未加入正式产品流程。
-
-三轮播放/停止对照中，不录制时 IOSurface 约71.5MiB、实际默认 malloc 分配约58.2MiB
-保持稳定；resident 约502.8→518.2MiB，增量主要落在空闲分配区域。
-另一次含录制对照的 IOSurface 增加约23.7MiB，实际默认 malloc 分配约58.8→58.7MiB。
-这些结果提示增长更偏向共享缓冲和缓存保留，尚不能证明存在泄漏，也不足以排除长期增长。
-本阶段保留队列和清屏优化，不强制清理系统/驱动缓存或额外销毁正常生命周期外的编解码资源。
-
-### 当前验收基线（2026-11-05）
-
-使用 `build/repro/app/AiPlayer.app` 和 `scripts/run-player.sh`，用户完成以下人工验收：
-普通播放、暂停/恢复、拖动进度、开关贴纸、音画同步、短时录制与停止保存，
-并用 QuickTime 回放录制文件，均报告正常。运行中观察到约800MB至1GB的内存占用，
-这些数字来自不同功能状态和运行时刻，未作为同条件内存基准或回退结论。
-
-新构建已核对使用独立 Conan 补丁包而非 `tmp/ffmpeg-vt-fixed`；
-`conan.lock` 固定当前依赖及 recipe 解析结果。保留现阶段的优化，不继续默认开启 PBO、
-强制独立 OpenGL 渲染线程或分配器回收操作。下一次优化应在此基线上独立对照，
-同时验证流畅度、音画同步和内存，不以单次活动监视器读数判断收益。
+第三方源码、补丁、库和模型遵循各自许可，Conan recipe 的 MIT 许可不等于 FFmpeg 或应用二进制整体采用 MIT。当前仓库没有项目级 LICENSE 文件，README 不替代许可证声明，也不代表已完成二进制分发许可审查。
