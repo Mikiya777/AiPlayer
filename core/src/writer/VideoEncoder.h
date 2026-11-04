@@ -1,5 +1,6 @@
 #pragma once
 #include "writer/Muxer.h"
+#include <deque>
 extern "C" {
 #include <libswscale/swscale.h>
 }
@@ -18,6 +19,10 @@ private:
     SwsContext* m_scale=nullptr;
     FramePtr m_frame;
     bool m_use_libyuv=false;
+    bool m_videotoolbox=false;
+    struct PendingFrame { int64_t pts; int64_t duration; double submitted; };
+    std::deque<PendingFrame> m_pending;
+    int64_t m_last_input_pts=AV_NOPTS_VALUE;
     int m_stream=-1;
 };
 }

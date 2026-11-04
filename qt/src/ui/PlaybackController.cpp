@@ -230,6 +230,11 @@ void PlaybackController::StartRecording(const QUrl& path)
     const QSize size=m_video_output->GetRecordingSize();
     if(size.isEmpty()){ReportError(QStringLiteral("请等待视频画面出现后再录制"));return;}
     RecordingConfig config;config.m_path=path.toLocalFile().toStdString();config.m_source=m_source.toLocalFile().toStdString();
+    const auto encoder=qEnvironmentVariable("AIPLAYER_RECORD_ENCODER", "libx264");
+    if(encoder!="libx264" && encoder!="h264_videotoolbox") {
+        ReportError(QStringLiteral("不支持的录制编码器配置"));return;
+    }
+    config.m_video_codec=encoder.toStdString();
     config.m_width=size.width();config.m_height=size.height();config.m_start=m_player.GetPosition();
     m_writer=std::make_shared<FileWriter>(std::move(config));
     m_recording=true;m_recording_duration=0;m_video_output->SetRecorder(m_writer);
@@ -238,7 +243,7 @@ void PlaybackController::StartRecording(const QUrl& path)
 void PlaybackController::StopRecording()
 {
     if(!m_recording)return;
-    m_recording_duration=qMax<qint64>(0,qRound64((m_player.GetPosition()-m_writer->GetConfig().m_start)*1000));
+    m_recording_duration=(m_writer->GetStartTime()<0 ? 0 : qMax<qint64>(0,qRound64((m_player.GetPosition()-m_writer->GetStartTime())*1000)));
     m_recording=false;
     if(m_video_output)m_video_output->SetRecorder({});
     m_writer->Stop(m_player.GetPosition());emit recordingChanged();
@@ -246,7 +251,7 @@ void PlaybackController::StopRecording()
 void PlaybackController::PollRecording()
 {
     if(!m_writer)return;
-    if(m_recording){m_recording_duration=qMax<qint64>(0,qRound64((m_player.GetPosition()-m_writer->GetConfig().m_start)*1000));emit recordingChanged();}
+    if(m_recording){m_recording_duration=(m_writer->GetStartTime()<0 ? 0 : qMax<qint64>(0,qRound64((m_player.GetPosition()-m_writer->GetStartTime())*1000)));emit recordingChanged();}
     if(!m_writer->IsDone())return;
     const QString error=QString::fromStdString(m_writer->GetError());
     const QString path=QString::fromStdString(m_writer->GetConfig().m_path);

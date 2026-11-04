@@ -10,6 +10,7 @@ VideoEncoder::~VideoEncoder(){sws_freeContext(m_scale);avcodec_free_context(&m_c
 void VideoEncoder::Open(Muxer& muxer,int width,int height,const std::string& name)
 {
     if(m_context)throw std::logic_error("视频编码器只能打开一次");
+    m_videotoolbox=name=="h264_videotoolbox";
     const char* converter=std::getenv("AIPLAYER_RECORD_CONVERTER");
     m_use_libyuv=converter && std::string(converter)=="libyuv";
 #ifndef AIPLAYER_HAVE_LIBYUV
@@ -22,15 +23,32 @@ void VideoEncoder::Open(Muxer& muxer,int width,int height,const std::string& nam
     m_context=avcodec_alloc_context3(codec);if(!m_context)throw std::bad_alloc();
     m_context->width=width;m_context->height=height;m_context->pix_fmt=AV_PIX_FMT_YUV420P;
     m_context->time_base={1,90000};m_context->framerate={30,1};m_context->gop_size=60;
+    if(m_videotoolbox) {
+        m_context->time_base={1,30};
+        // 起始对照码率：4K 约 40Mbps，1080p 约 10Mbps；不等同于 x264 CRF 20。
+        m_context->bit_rate=std::max<int64_t>(2000000,int64_t(width)*height*40000000/(3840*2160));
+    }
     m_context->max_b_frames=0;m_context->flags|=AV_CODEC_FLAG_GLOBAL_HEADER;
     AVDictionary* options=nullptr;
     // 实时录制不做多帧前瞻，避免编码器内部积压整组 4K 图像。
     if(name=="libx264"){av_dict_set(&options,"preset","veryfast",0);av_dict_set(&options,"crf","20",0);av_dict_set(&options,"tune","zerolatency",0);}
+    if(m_videotoolbox) {
+        av_dict_set(&options,"realtime","1",0);
+        av_dict_set(&options,"allow_sw","0",0);
+        av_dict_set(&options,"profile","high",0);
+        av_dict_set(&options,"bf","0",0);
+    }
     int ret=avcodec_open2(m_context,codec,&options);av_dict_free(&options);CheckWrite(ret,"打开视频编码器");
     m_stream=muxer.AddStream(*m_context);m_muxer=&muxer;
 }
 void VideoEncoder::Send(const AVFrame* rgba,int64_t pts,int64_t duration)
 {
+    // 对外继续接受 1/90000 时间基，避免改变 FileWriter 的时间轴。
+    const int64_t encoderPts=av_rescale_q(pts,AVRational{1,90000},m_context->time_base);
+    const int64_t encoderDuration=av_rescale_q(duration,AVRational{1,90000},m_context->time_base);
+    if(m_videotoolbox && rgba && (pts<0 || duration!=3000 || pts%3000 ||
+       (m_last_input_pts!=AV_NOPTS_VALUE && encoderPts!=m_last_input_pts+1)))
+        throw std::runtime_error("VideoToolbox 对照要求连续 30fps 时间戳");
     AVFrame* frame=nullptr;
     if(rgba){
         PerformanceScope measure("record_rgba_yuv_convert");
@@ -49,7 +67,7 @@ void VideoEncoder::Send(const AVFrame* rgba,int64_t pts,int64_t duration)
         Performance::Get().Add("record_frame_copy_on_write_count",
                                av_frame_is_writable(frame)?0:1);
         CheckWrite(av_frame_make_writable(frame),"准备可写编码图像");
-        frame->pts=pts;frame->pkt_duration=duration;
+        frame->pts=encoderPts;frame->pkt_duration=encoderDuration;
         }
         if(m_use_libyuv) {
 #ifdef AIPLAYER_HAVE_LIBYUV
@@ -77,15 +95,32 @@ void VideoEncoder::Send(const AVFrame* rgba,int64_t pts,int64_t duration)
         }
         }
     }
+    const double submitted=Performance::Get().Active()?Performance::Now():0;
     { PerformanceScope measure("record_encode_send");
       CheckWrite(avcodec_send_frame(m_context,frame),"发送视频帧"); }
+    if(m_videotoolbox && frame) {
+        m_pending.push_back({encoderPts,encoderDuration,submitted});
+        m_last_input_pts=encoderPts;
+    }
     PacketPtr packet(av_packet_alloc());if(!packet)throw std::bad_alloc();
     int ret;
     auto Receive=[&]{PerformanceScope measure("record_encode_receive");return avcodec_receive_packet(m_context,packet.get());};
     while((ret=Receive())==0){
-        if(packet->duration<=0)packet->duration=duration;
+        if(m_videotoolbox) {
+            if(m_pending.empty() || packet->pts!=m_pending.front().pts ||
+               m_context->max_b_frames!=0 || m_context->has_b_frames!=0)
+                throw std::runtime_error("VideoToolbox 时间戳不符: pts="+std::to_string(packet->pts)+", dts="+std::to_string(packet->dts)+", expected="+std::to_string(m_pending.empty()?-1:m_pending.front().pts)+", max_b="+std::to_string(m_context->max_b_frames)+", has_b="+std::to_string(m_context->has_b_frames));
+            const auto pending=m_pending.front();m_pending.pop_front();
+            // 仅限已禁用 B 帧且输出 PTS 与输入顺序一致的路径；不修补任意编码器。
+            if(packet->dts!=packet->pts)throw std::runtime_error("VideoToolbox 无重排输出 DTS 与 PTS 不一致");
+            packet->duration=pending.duration;
+            Performance::Get().Add("record_vt_packets_count",1);
+            if(pending.submitted)Performance::Get().Add("record_encode_output_latency",Performance::Now()-pending.submitted);
+        } else if(packet->duration<=0)packet->duration=encoderDuration;
         m_muxer->Write(*packet,m_context->time_base,m_stream);
     }
     if(ret!=AVERROR_EOF && ret!=AVERROR(EAGAIN))CheckWrite(ret,"接收视频编码包");
+    if(m_videotoolbox && !rgba && (ret!=AVERROR_EOF || !m_pending.empty()))
+        throw std::runtime_error("VideoToolbox 排空不完整");
 }
 }

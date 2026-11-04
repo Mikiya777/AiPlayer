@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
+#include <iostream>
 namespace PLAYER {
 namespace {
 struct AudioComplete {};
@@ -60,6 +61,8 @@ void FileWriter::Submit(FramePtr frame,double time)
         {std::lock_guard<std::mutex> errorLock(m_error_mutex);m_error="录制帧格式、尺寸或时间戳无效";}
         m_stopping=true;m_wake.notify_one();return;
     }
+    if(!m_ready.load())return; // 初始化期间不积压大帧。
+    if(m_actual_start.load()<0)m_actual_start.store(time);
     // 按实际行跨度计费，不能漏掉对齐填充；先检查再累加，避免溢出。
     const uint64_t bytes=static_cast<uint64_t>(std::abs(static_cast<int64_t>(frame->linesize[0])))*frame->height;
     if(bytes>64*1024*1024-m_bytes){
@@ -90,6 +93,7 @@ void FileWriter::Run()
 {
     // 同目录临时文件，正常写完 trailer 后才替换用户选择的目标。
     const auto temporary=m_config.m_path+".recording-part";
+    const double startup=Performance::Now();
     try {
         if(m_config.m_width<=0 || m_config.m_height<=0 || m_config.m_width%2 || m_config.m_height%2)
             throw std::runtime_error("录制分辨率必须为正偶数");
@@ -100,12 +104,15 @@ void FileWriter::Run()
             throw std::runtime_error("不能覆盖正在播放的源文件");
         Muxer muxer;muxer.Open(temporary,m_config.m_container);
         VideoEncoder video;video.Open(muxer,m_config.m_width,m_config.m_height,m_config.m_video_codec);
+        if(std::getenv("AIPLAYER_PROFILE"))std::cerr<<"record_encoder_ready_ms="<<Performance::Now()-startup<<std::endl;
         Demuxer probe;CheckWrite(probe.Open(m_config.m_source),"探测录制源");
         const bool hasAudio=probe.GetBestStream(AVMEDIA_TYPE_AUDIO)>=0;
         FileReader audioReader;if(hasAudio)CheckWrite(audioReader.Open(m_config.m_source,true,false),"打开录制源音频");
         AudioEncoder audio;if(hasAudio)audio.Open(muxer,m_config.m_audio_codec);
         muxer.WriteHeader();
-        FramePtr previous;int64_t next=0;double end=m_config.m_start;
+        if(std::getenv("AIPLAYER_PROFILE"))std::cerr<<"record_init_ms="<<Performance::Now()-startup<<std::endl;
+        m_ready.store(true);
+        FramePtr previous;int64_t next=0;double end=m_config.m_start;double start=-1;
         for(;;){
             Entry entry;
             {
@@ -116,7 +123,8 @@ void FileWriter::Run()
             }
             if(entry.m_profile_enqueue_ms)Performance::Get().Add("record_queue_wait",Performance::Now()-entry.m_profile_enqueue_ms);
             if(!GetError().empty())throw std::runtime_error(GetError());
-            const int64_t target=std::max<int64_t>(0,std::llround((entry.m_time-m_config.m_start)*30));
+            if(start<0){start=entry.m_time; if(std::getenv("AIPLAYER_PROFILE"))std::cerr<<"record_first_frame_ms="<<Performance::Now()-startup<<", media_start="<<start<<std::endl;}
+            const int64_t target=std::max<int64_t>(0,std::llround((entry.m_time-start)*30));
             if(!previous){
                 previous=FramePtr(av_frame_clone(entry.m_frame.get()));
                 if(!previous)throw std::bad_alloc();
@@ -127,13 +135,14 @@ void FileWriter::Run()
         }
         if(!GetError().empty())throw std::runtime_error(GetError());
         if(!previous)throw std::runtime_error("没有收到可录制的视频画面");
-        const int64_t count=std::max<int64_t>(1,std::llround((end-m_config.m_start)*30));
+        const int64_t count=std::max<int64_t>(1,std::llround((end-start)*30));
         while(next<count){video.Send(previous.get(),next*3000);++next;}
         video.Send(nullptr);
-        if(hasAudio)WriteAudio(audio,audioReader,m_config.m_start,m_config.m_start+next/30.0);
+        if(hasAudio)WriteAudio(audio,audioReader,start,start+next/30.0);
         muxer.Finish();
         std::filesystem::rename(temporary,m_config.m_path);
     }catch(const std::exception& e){
+        if(std::getenv("AIPLAYER_PROFILE"))std::cerr<<"record_failure_ms="<<Performance::Now()-startup<<", error="<<e.what()<<std::endl;
         {std::lock_guard<std::mutex> lock(m_error_mutex);m_error=e.what();}
         // 保留临时文件便于诊断，不覆盖已有成品。
     }

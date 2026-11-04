@@ -21,6 +21,8 @@ public:
     void Submit(FramePtr frame,double mediaTime);
     void Stop(double mediaTime);
     void Fail(const std::string& error);
+    bool IsReady() const {return m_ready.load();}
+    double GetStartTime() const {return m_actual_start.load();}
     bool IsDone() const {return m_done.load();}
     std::string GetError() const;
     const RecordingConfig& GetConfig() const {return m_config;}
@@ -35,6 +37,8 @@ private:
     bool m_stopping=false;
     double m_end=0;
     std::atomic<bool> m_done{false};
+    std::atomic<bool> m_ready{false};
+    std::atomic<double> m_actual_start{-1};
     std::string m_error;
     mutable std::mutex m_error_mutex;
     std::thread m_thread;
