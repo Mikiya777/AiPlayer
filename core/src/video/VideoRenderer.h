@@ -18,7 +18,8 @@ public:
     bool Draw(int framebufferWidth, int framebufferHeight);
     void SetFilters(bool flip, bool gray, bool invert) { m_flip=flip; m_gray=gray; m_invert=invert; }
     void SetFaces(std::vector<FaceStickerPose> faces) { m_faces=std::move(faces); }
-    void Clear();
+    // 清屏并释放大图存储；false 仅用于旧保留策略的内存对照。
+    void Clear(bool releaseStorage = true);
     void Release();
     QString GetError() const { return m_error; }
 private:

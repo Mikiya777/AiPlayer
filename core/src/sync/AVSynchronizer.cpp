@@ -96,7 +96,16 @@ int AVSynchronizer::PushFrame(const AVFrame &frame, AVRational timeBase,
                                                             : m_config.m_default_video_duration);
   queued.m_profile_enqueue_ms=Performance::Get().Active()?Performance::Now():0;
   queue.push_back(std::move(queued));
-  if(!audio)Performance::Get().Add("video_queue_frames",queue.size());
+  if(!audio) {
+    Performance::Get().Add("video_queue_frames",queue.size());
+    Performance::Get().Add("video_queue_capacity_frames",m_config.m_max_video_frames);
+    if(Performance::Get().Active()) {
+      double bytes=0;
+      for(const auto& entry:queue)
+        bytes+=std::abs(static_cast<int64_t>(entry.m_frame->linesize[0]))*entry.m_frame->height;
+      Performance::Get().Add("memory_video_queue_payload_mib",bytes/1048576.0);
+    }
+  }
   lastTime = time;
   return 0;
 }

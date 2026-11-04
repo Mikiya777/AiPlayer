@@ -93,7 +93,7 @@ public:
       }
     }
     if (m_clear) {
-      m_renderer.Clear();
+      m_renderer.Clear(qEnvironmentVariable("AIPLAYER_CLEAR_STORAGE") != "retain");
       m_clear = false;
     }
     const bool newFrame = bool(m_frame);
@@ -176,6 +176,17 @@ public:
       m_capture_initial = false;
     }
     if (m_pbo.Pending()) update();
+    if (Performance::Get().Active()) {
+      if(m_current_frame)
+        Performance::Get().Add("memory_render_frame_payload_mib",
+          std::abs(static_cast<int64_t>(m_current_frame->linesize[0]))*m_current_frame->height/1048576.0);
+      const auto screenSize=framebufferObject()->size();
+      Performance::Get().Add("memory_screen_fbo_color_nominal_mib",
+          static_cast<double>(screenSize.width())*screenSize.height()*4/1048576.0);
+      const auto captureSize=m_capture?m_capture->size():QSize();
+      Performance::Get().Add("memory_capture_fbo_color_nominal_mib",
+          m_capture ? static_cast<double>(captureSize.width())*captureSize.height()*4/1048576.0 : 0);
+    }
     const QSize size = framebufferObject()->size();
     if (!m_renderer.Draw(size.width(), size.height()))
       Fail(QStringLiteral("视频绘制失败：") + m_renderer.GetError());

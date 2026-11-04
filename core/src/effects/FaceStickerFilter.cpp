@@ -87,6 +87,7 @@ bool FaceStickerFilter::Detect(const AVFrame& frame, std::vector<FaceStickerPose
             }
         }
     }
+    Performance::Get().Add("memory_face_input_capacity_mib",m_pixels.capacity()/1048576.0);
     Performance::Get().Add("face_input_mib", m_pixels.size() / 1048576.0);
     HFImageData image{m_pixels.data(), width, height, HF_STREAM_RGBA, HF_CAMERA_ROTATION_0};
     HFImageStream stream = nullptr;

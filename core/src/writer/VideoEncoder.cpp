@@ -67,6 +67,11 @@ void VideoEncoder::Send(const AVFrame* rgba,int64_t pts,int64_t duration)
         Performance::Get().Add("record_frame_copy_on_write_count",
                                av_frame_is_writable(frame)?0:1);
         CheckWrite(av_frame_make_writable(frame),"准备可写编码图像");
+        if(Performance::Get().Active()) {
+            size_t bytes=0;
+            for(const auto* buffer:frame->buf)if(buffer)bytes+=buffer->size;
+            Performance::Get().Add("memory_encoder_yuv_buffer_mib",bytes/1048576.0);
+        }
         frame->pts=encoderPts;frame->pkt_duration=encoderDuration;
         }
         if(m_use_libyuv) {

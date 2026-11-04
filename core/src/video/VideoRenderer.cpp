@@ -127,6 +127,8 @@ bool VideoRenderer::Upload(const AVFrame& rgba)
                 rgba.data[0]+static_cast<ptrdiff_t>(y)*rgba.linesize[0],rowBytes);
         pixels=m_packed_pixels.data();
     }
+    Performance::Get().Add("memory_upload_scratch_capacity_mib",m_packed_pixels.capacity()/1048576.0);
+    Performance::Get().Add("memory_video_texture_nominal_mib",static_cast<double>(rgba.width)*rgba.height*4/1048576.0);
     GLint oldAlignment=0, oldRowLength=0;
     glGetIntegerv(GL_UNPACK_ALIGNMENT,&oldAlignment);
     glGetIntegerv(GL_UNPACK_ROW_LENGTH,&oldRowLength);
@@ -184,11 +186,24 @@ bool VideoRenderer::Draw(int framebufferWidth, int framebufferHeight)
     if (glGetError() != GL_NO_ERROR) { m_error = QStringLiteral("OpenGL 绘制失败"); return false; }
     return true;
 }
-void VideoRenderer::Clear()
+void VideoRenderer::Clear(bool releaseStorage)
 {
     m_faces.clear();
     m_width = m_height = 0;
-    m_packed_pixels.clear();
+    if (releaseStorage) {
+        std::vector<uint8_t>().swap(m_packed_pixels);
+        if (m_texture && CheckContext()) {
+            // 保留纹理对象/采样参数，但归还原视频的大图存储。
+            // 后续 Upload 会按新的尺寸重新分配；操作仍在 GL 上下文线程。
+            GLint previousTexture = 0;
+            glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+            glBindTexture(GL_TEXTURE_2D, m_texture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
+        }
+    } else {
+        m_packed_pixels.clear();
+    }
 }
 void VideoRenderer::Release()
 {
@@ -200,6 +215,6 @@ void VideoRenderer::Release()
     if (m_vao) glDeleteVertexArrays(1, &m_vao);
     m_texture = m_vbo = m_vao = 0;
     m_program.reset(); m_context.clear(); m_width = m_height = 0;
-    m_packed_pixels.clear();
+    std::vector<uint8_t>().swap(m_packed_pixels);
 }
 } // namespace PLAYER

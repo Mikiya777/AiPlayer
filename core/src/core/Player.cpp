@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 extern "C" {
 #include <libavutil/error.h>
@@ -18,6 +20,14 @@ void Check(int result, const char *operation) {
   av_strerror(result, error, sizeof(error));
   throw std::runtime_error(std::string(operation) + ": " + error);
 }
+SyncConfig PlaybackSyncConfig() {
+  SyncConfig config;
+  // 播放器默认保留两帧 RGBA；4 可恢复旧容量进行对照。
+  config.m_max_video_frames = 2;
+  const char* frames = std::getenv("AIPLAYER_VIDEO_QUEUE_FRAMES");
+  if (frames && std::strcmp(frames, "4") == 0) config.m_max_video_frames = 4;
+  return config;
+}
 void RetryLater() {
   std::this_thread::sleep_for(std::chrono::milliseconds(3));
 }
@@ -28,7 +38,8 @@ double FrameTime(const AVFrame &frame, AVRational base) {
   return pts == AV_NOPTS_VALUE ? -1.0 : pts * av_q2d(base);
 }
 } // namespace
-Player::Player(std::unique_ptr<IAudioOutput> audioOutput) : m_audio(std::move(audioOutput)) {}
+Player::Player(std::unique_ptr<IAudioOutput> audioOutput)
+    : m_audio(std::move(audioOutput)), m_sync(PlaybackSyncConfig()) {}
 Player::~Player() {
   Close();
 }
@@ -200,6 +211,8 @@ void Player::ProduceVideo(std::string path, uint64_t generation, double target) 
             if (time >= 0 && time < target) return;
             FramePtr rgba;
             Check(pipeline.Process(frame, rgba), "RGBA 转换");
+            Performance::Get().Add("memory_producer_rgba_payload_mib",
+                std::abs(static_cast<int64_t>(rgba->linesize[0]))*rgba->height/1048576.0);
             // RGBA 自己持有像素内存和时间戳，可以安全离开解码回调。
             const double waitStart=Performance::Get().Active()?Performance::Now():0;
             for (;;) {
