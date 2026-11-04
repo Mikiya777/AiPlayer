@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QUrl>
 #include <QMediaDevices>
 #include <QAudioDevice>
@@ -100,6 +101,8 @@ private:
     QAudioDevice m_default_audio_device;
     Player m_player;
     QTimer m_timer;
+    QElapsedTimer m_position_notify_clock;
+    int m_position_notify_interval_ms = 50;
     QUrl m_source;
     QPointer<VideoItem> m_video_output;
     QMetaObject::Connection m_render_error_connection;

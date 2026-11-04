@@ -1,5 +1,6 @@
 #include "ui/PlaybackController.h"
 #include "video/VideoItem.h"
+#include "diagnostics/Performance.h"
 #include <QFileInfo>
 #include <algorithm>
 #include <cmath>
@@ -17,6 +18,9 @@ PlaybackController::PlaybackController(QObject* parent)
             this, &PlaybackController::RefreshAudioDevice);
     m_record_timer.setInterval(100);
     connect(&m_record_timer,&QTimer::timeout,this,&PlaybackController::PollRecording);
+    // 保持音频供给/同步推进频率；界面进度通知独立限频。
+    if (qEnvironmentVariable("AIPLAYER_PROGRESS_NOTIFY") == "legacy")
+        m_position_notify_interval_ms = 0;
     m_timer.setInterval(5);
     m_timer.setTimerType(Qt::PreciseTimer);
     connect(&m_timer, &QTimer::timeout, this, &PlaybackController::Advance);
@@ -117,6 +121,8 @@ void PlaybackController::Pause()
         return;
     }
     m_timer.stop();
+    emit PositionChanged(); // 暂停后立即显示最后位置，不等待下一次周期通知。
+    m_position_notify_clock.start();
     SetState(kPausedState);
 }
 void PlaybackController::TogglePlayback()
@@ -149,6 +155,7 @@ void PlaybackController::SetPosition(qint64 position)
     m_at_end = false;
     m_position = position;
     emit PositionChanged();
+    m_position_notify_clock.start();
     if (playing) m_timer.start();
 }
 
@@ -161,8 +168,16 @@ void PlaybackController::Advance()
         m_video_output->SetFrame(std::move(video.m_frame));
     }
     const qint64 position = qMax<qint64>(0, qRound64(m_player.GetPosition() * 1000.0));
-    if (position != m_position) { m_position = position; emit PositionChanged(); }
+    if (position != m_position) {
+        m_position = position; // getter 始终返回当前进度，限频的只是 UI 通知。
+        if (!m_position_notify_clock.isValid() ||
+            m_position_notify_clock.elapsed() >= m_position_notify_interval_ms) {
+            emit PositionChanged();
+            m_position_notify_clock.start();
+        }
+    }
     if (ret == AVERROR_EOF) {
+        emit PositionChanged();
         StopRecording();
         m_timer.stop();
         m_at_end = true;
