@@ -29,3 +29,6 @@ third_party/inspireface/Pikachu
 .env
 .env.*
 *.log
+
+# Downloaded optional source checkout; its revision is fixed by scripts/prepare-deps.sh.
+third_party/libyuv/

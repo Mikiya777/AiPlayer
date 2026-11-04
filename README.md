@@ -98,7 +98,8 @@ flowchart TD
 | Conan | Conan 2 |
 | Qt | CMake 要求 6.5+；当前验证为 6.11.1 |
 | Qt 模块 | Core、Gui、Quick、QuickControls2、Multimedia、OpenGL |
-| FFmpeg | 4.4.4 |
+| FFmpeg | `4.4.4@aiplayer/vtfix`，仓库内 recipe 和 VideoToolbox 补丁 |
+| libyuv | 可选源码依赖，优化构建固定提交 `d088b8f2bd8f29badf5ba015a24d6c38dc69f23a` |
 | GLM | `cci.20230113` |
 | InspireFace | 1.2.3，macOS Apple Silicon SDK + Pikachu 模型 |
 
@@ -152,34 +153,61 @@ conan profile detect
 确认 profile 使用本机 Apple Clang 和 `armv8` 架构，然后执行：
 
 ```bash
-conan create third_party/inspireface -s build_type=Release
-conan install . -s build_type=Release --build=missing
+bash scripts/prepare-deps.sh
 ```
 
-首次安装可能需要从源码构建 FFmpeg 等依赖，耗时取决于本地缓存和网络。`conan install` 会生成 CMake toolchain 与 presets，这些本地生成文件无需提交。
+脚本首先检查 SDK/模型，准备固定提交的 libyuv，然后从源码创建
+`ffmpeg/4.4.4@aiplayer/vtfix` 和 InspireFace 包。FFmpeg recipe 来自 Conan Center
+的固定副本，保留原有兼容补丁，增加本项目已测试的 VideoToolbox 修改。
+补丁在源码构建阶段应用，不再修改 Conan 生成文件或替换缓存静态库中的对象。
+本地自定义引用不会覆盖原版 `ffmpeg/4.4.4`。
 
-### 4. 编译应用
-
-将下面的 Qt 路径替换为实际安装目录：
+libyuv 默认通过 GitHub 镜像获取，校验 Git 提交，并拒绝已修改的源码；也可指定仓库：
+`LIBYUV_REPOSITORY=https://chromium.googlesource.com/libyuv/libyuv`。
+已有相同提交的干净源码可复用，但准备和编译两步必须传入相同目录，例如：
 
 ```bash
-cmake --preset conan-release \
-  -DCMAKE_PREFIX_PATH="/path/to/Qt/6.11.1/macos"
-cmake --build --preset conan-release --parallel 8
+LIBYUV_SOURCE="$PWD/tmp/libyuv-source" bash scripts/prepare-deps.sh
 ```
 
-### 5. 启动
+首次编译可能较长，需要网络。脚本不安装系统工具，也不包含 SDK/模型或已编译库。
+2026-11-05 已在本机完成依赖源码构建和独立目录应用编译，普通播放验证通过。
+新构建已完成本机人工功能验收；尚未完成全新电脑或完全空缓存构建验证。
+
+### 4. 在独立目录编译应用
 
 ```bash
-open build/Release/AiPlayer.app
+bash scripts/build-repro.sh "/path/to/Qt/6.11.1/macos"
 ```
 
-也可以从命令行打开本地媒体：
+若上一步复用了已有 libyuv 源码：
 
 ```bash
-./build/Release/AiPlayer.app/Contents/MacOS/AiPlayer \
-  "/absolute/path/to/video.mp4"
+LIBYUV_SOURCE="$PWD/tmp/libyuv-source" \
+  bash scripts/build-repro.sh "/path/to/Qt/6.11.1/macos"
 ```
+
+Conan 生成文件位于 `build/repro` 下，应用单独在 `build/repro/app` 构建，
+不覆盖原 `build/Release` 实验环境。主程序目标不依赖未公开的本地测试文件。
+顶层依赖、FFmpeg 源码和 libyuv 提交已固定，传递依赖仍存在版本范围；
+完成首次成功构建后生成 Conan lockfile，以固定依赖及 recipe 解析结果：
+
+```bash
+conan lock create . -s build_type=Release --no-remote --lockfile-out=conan.lock
+```
+
+将 `conan.lock` 与源码一起保存；后续构建脚本会显式使用它。该锁不包含 Qt SDK，
+也不替代编译器、Conan profile 和 libyuv 提交的版本记录。
+
+### 5. 启动优化路径
+
+```bash
+bash scripts/run-player.sh
+```
+
+可以在命令末尾追加本地视频路径。启动脚本固定开启已验证的优化参数，也允许通过同名
+环境变量覆盖。当前硬件路径通过参数显式开启，并不是自动失败回退。
+直接 `open build/repro/app/AiPlayer.app` 仍使用软件编解码/原读回默认配置。
 
 构建过程会将 InspireFace 动态库和模型复制到应用包。当前 `.app` 是开发构建，尚未完成面向其他电脑分发所需的 Qt 部署、签名与公证。
 
@@ -210,16 +238,16 @@ open build/Release/AiPlayer.app
 
 下一步计划：
 
-- [ ] 分段统计解码、RGBA 转换、排队、上传、录制采集、编码及写盘耗时。
-- [ ] 对比只播放与同时录制，记录 P95、帧提交间隔、积压和音画时钟差。
-- [ ] 根据测量结果评估硬件编解码、YUV 直接渲染、缓冲池和异步读回。
+- [x] 分段统计解码、RGBA 转换、排队、上传、录制采集、编码及写盘耗时。
+- [x] 对比只播放与同时录制，记录 P95、帧提交间隔、积压和音画时钟差。
+- [x] 评估硬件编解码、缓冲复用和异步读回；YUV 直通渲染暂不实施。
 - [ ] 补充可公开的演示视频与条件明确的前后对比结果。
 
 ## 当前限制
 
 - 仅支持本地媒体，未实现网络流播放。
 - 视频主路径仍是软件解码、CPU 转 RGBA 与 OpenGL 上传；没有完整硬件帧直通或端到端零拷贝。
-- 默认录制仍使用软件编码。此前的硬件编码试验遇到兼容问题，未纳入默认路径。
+- 程序直接启动默认使用软件编码；优化启动脚本显式选择补丁版 VideoToolbox 硬编码。
 - 有特效录制仍会同步读取 GPU 画面；高分辨率下可能阻塞显示。
 - 大负载下仍有流畅度与音画同步改善空间；未承诺所有设备上的实时 4K 录制。
 - 尚未完成 HDR 色调映射与完整的显示色彩管理，颜色可能与系统播放器存在差异。
@@ -318,10 +346,13 @@ AIPLAYER_RECORD_READBACK=direct \
 ```
 
 先构建 `aiplayer_app`，测试程序更新不会自动更新这个 App。
-本地 FFmpeg 补丁库位于忽略目录 `tmp/ffmpeg-vt-fixed`，原 Conan 缓存保持不变；
-补丁准备脚本目前在本地 `tests/prepare-vt-patch.py`，未随公开仓库发布。
-因此公开仓库尚不能独立复现硬编补丁，需要后续整理第三方补丁及构建步骤，
-不能把本地实验状态视为已发布功能。重新生成 Conan 配置可能需要重新应用本地链接配置。
+旧实验的 FFmpeg 补丁库位于 `tmp/ffmpeg-vt-fixed`，其 `build/Release` 链接方式
+仅作为历史环境保留。正式源码补丁、独立 Conan recipe 和准备脚本现已纳入仓库，
+新的复现入口为 `scripts/prepare-deps.sh` 与 `scripts/build-repro.sh`，已通过本机源码构建与独立目录应用编译；新构建已通过本机人工功能验收。
+当前旧实验构建启用了 `nonfree`；新 recipe 禁用项目未使用的 FDK-AAC 和 SSL，
+音频录制继续使用原先的 FFmpeg 内置 `aac`。新配置仍启用 libx264 等 GPL 组件，
+不意味着整体二进制是 MIT/LGPL-only。第三方许可保留在各自源码/包中，FFmpeg
+recipe 的来源和修改说明见 `third_party/ffmpeg/NOTICE`。本阶段不分发二进制安装包。
 
 ### 贴纸录制的读回与刷新优化
 
@@ -387,3 +418,15 @@ CPU 66.3%→65.5%，平均 footprint 1130→1082MiB；这些资源变化属于�
 另一次含录制对照的 IOSurface 增加约23.7MiB，实际默认 malloc 分配约58.8→58.7MiB。
 这些结果提示增长更偏向共享缓冲和缓存保留，尚不能证明存在泄漏，也不足以排除长期增长。
 本阶段保留队列和清屏优化，不强制清理系统/驱动缓存或额外销毁正常生命周期外的编解码资源。
+
+### 当前验收基线（2026-11-05）
+
+使用 `build/repro/app/AiPlayer.app` 和 `scripts/run-player.sh`，用户完成以下人工验收：
+普通播放、暂停/恢复、拖动进度、开关贴纸、音画同步、短时录制与停止保存，
+并用 QuickTime 回放录制文件，均报告正常。运行中观察到约800MB至1GB的内存占用，
+这些数字来自不同功能状态和运行时刻，未作为同条件内存基准或回退结论。
+
+新构建已核对使用独立 Conan 补丁包而非 `tmp/ffmpeg-vt-fixed`；
+`conan.lock` 固定当前依赖及 recipe 解析结果。保留现阶段的优化，不继续默认开启 PBO、
+强制独立 OpenGL 渲染线程或分配器回收操作。下一次优化应在此基线上独立对照，
+同时验证流畅度、音画同步和内存，不以单次活动监视器读数判断收益。

@@ -1,0 +1,22 @@
+Recipe source: https://github.com/conan-io/conan-center-index/tree/master/recipes/ffmpeg/all
+The upstream recipe and its Conan compatibility patches were copied from the
+local exported ffmpeg/4.4.4 recipe snapshot. The complete upstream recipe SHA-256
+is recorded at the top of conanfile.py. The copied Conan recipe uses the MIT
+license in LICENSE. This is not FFmpeg's license.
+
+Local changes: fixed FFmpeg version, disabled unused libfdk_aac/SSL defaults,
+and added patches/4.4.4-aiplayer-videotoolbox.patch. The local Conan reference
+ffmpeg/4.4.4@aiplayer/vtfix prevents confusion with an unmodified upstream binary.
+
+FFmpeg source: https://ffmpeg.org/releases/ffmpeg-4.4.4.tar.bz2
+Source SHA-256 is in conandata.yml. FFmpeg and source-derived patches remain
+subject to their upstream licenses; see https://ffmpeg.org/legal.html and
+https://ffmpeg.org/doxygen/trunk/md_LICENSE.html . Upstream authorship notices
+must be preserved. This directory does not relicense FFmpeg under MIT.
+The preserved binutils patch includes its original authorship.
+
+The default recipe still enables GPL components such as libx264. Disabling the
+unused nonfree options is not a claim that the resulting application binary
+is MIT/LGPL-only or that all binary distribution obligations are fulfilled.
+This repository's reproduction workflow prepares a source build, not a signed
+or license-audited binary release.

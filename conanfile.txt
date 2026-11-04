@@ -1,7 +1,11 @@
 [requires]
-ffmpeg/4.4.4
+ffmpeg/4.4.4@aiplayer/vtfix
 glm/cci.20230113
 inspireface/1.2.3
+
+[options]
+ffmpeg/*:with_libfdk_aac=False
+ffmpeg/*:with_ssl=False
 
 [generators]
 CMakeDeps

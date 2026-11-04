@@ -1,0 +1,17 @@
+patches:
+  4.4.4:
+  - patch_description: Compatibility with shared libaom
+    patch_file: patches/4.4-0001-fix-aom_codec_av1_dx_algo.patch
+    patch_source: https://git.ffmpeg.org/gitweb/ffmpeg.git/commit/d92fdc714496d43234733c315894abe0beeb3529
+    patch_type: portability
+  - patch_description: Compatibility with binutils >= 2.41
+    patch_file: patches/5.1-0004-fix-binutils.patch
+    patch_source: https://git.ffmpeg.org/gitweb/ffmpeg.git/commitdiff/effadce6c756247ea8bae32dc13bb3e6f464f0eb
+    patch_type: portability
+  - patch_description: AiPlayer VideoToolbox no-reorder and CMTime timestamp compatibility
+    patch_file: patches/4.4.4-aiplayer-videotoolbox.patch
+    patch_type: bugfix
+sources:
+  4.4.4:
+    sha256: 47b1fbf70a2c090d9c0fae5910da11c6406ca92408bb69d8c935cd46c622c7ce
+    url: https://ffmpeg.org/releases/ffmpeg-4.4.4.tar.bz2
