@@ -106,7 +106,7 @@ flowchart TD
 
 ### 保留的改动与取舍
 
-- **硬件编解码：**macOS 应用默认自动优先 VideoToolbox 解码，录制选择 VideoToolbox 编码。硬解后仍下载到 CPU、转 RGBA 并上传纹理；这不是硬件帧直通。硬编与旧软件编码的码率策略不同，CPU 降幅不作为等画质对比。
+- **硬件编解码：**macOS 应用默认自动优先 VideoToolbox 解码，录制优先 VideoToolbox 编码，不可用或初始化失败时回退 libx264。硬解后仍下载到 CPU、转 RGBA 并上传纹理；这不是硬件帧直通。硬编与旧软件编码的码率策略不同，CPU 降幅不作为等画质对比。
 - **录制启动时序：**编码器和封装器就绪后才接收画面，以首张接受帧的媒体时间确定音视频共同起点，避免初始化期间填满录制队列。
 - **直接读回：**特效录制直接把 FBO 读入 RGBA 帧，以负行跨度处理上下方向，省去中间 QImage 转换和整帧复制。无特效且尺寸一致时共享原始帧，绕过读回。
 - **减少刷新：**贴纸模式仅在检测结果与对应图像准备好后请求刷新；播放仍以 5ms 定时器推进，进度条/时间文字最多约每 50ms 通知一次，暂停、跳转和结束时即时更新。
@@ -218,7 +218,7 @@ LIBYUV_SOURCE="$PWD/tmp/libyuv-source" \
 open build/repro/app/AiPlayer.app
 ```
 
-macOS 应用自身默认使用自动解码（优先 VideoToolbox）、VideoToolbox 编码与直接读回；编入 libyuv 时默认使用它做录制转换。`open` 和终端脚本使用同一组默认值，录制硬编当前不自动回退。
+macOS 应用自身默认使用自动解码、自动录制编码（均优先 VideoToolbox）与直接读回；编入 libyuv 时默认使用它做录制转换。`open` 和终端脚本使用同一组默认值，录制编码器不可用或初始化失败时自动回退 libx264；已经开始录制后的编码错误仍停止并报告，不在同一文件中途切换编码器。
 
 需要查看终端日志或传入媒体路径时，使用同一应用的便捷入口：
 
@@ -235,7 +235,7 @@ bash scripts/run-player.sh "/absolute/path/to/video.mp4"
 | 环境变量 | 可选值 | 当前用途 |
 | --- | --- | --- |
 | `AIPLAYER_VIDEO_DECODER` | `auto` / `software` / `videotoolbox` | macOS 应用默认 auto，硬解不适用时软解；videotoolbox 为不回退的对照模式 |
-| `AIPLAYER_RECORD_ENCODER` | `libx264` / `h264_videotoolbox` | macOS 应用默认硬编 |
+| `AIPLAYER_RECORD_ENCODER` | `auto` / `libx264` / `h264_videotoolbox` | 默认 auto，初始化时优先硬编，失败回退 libx264；指定具体编码器时不回退 |
 | `AIPLAYER_RECORD_CONVERTER` | `swscale` / `libyuv` | 编入 libyuv 时默认使用；当前录制转换限定同尺寸偶数宽高 RGBA，输出 BT.601 limited I420 |
 | `AIPLAYER_RECORD_READBACK` | `qimage` / `direct` / `pbo` | 应用默认 direct；pbo 为可选实验 |
 | `AIPLAYER_VIDEO_QUEUE_FRAMES` | `2` / `4` | 默认两帧，4 恢复旧容量 |

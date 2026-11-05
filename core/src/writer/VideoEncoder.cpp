@@ -2,6 +2,7 @@
 #include "writer/VideoEncoder.h"
 #include <stdexcept>
 #include <cstdlib>
+#include <memory>
 #ifdef AIPLAYER_HAVE_LIBYUV
 #include <libyuv/convert.h>
 #endif
@@ -10,7 +11,6 @@ VideoEncoder::~VideoEncoder(){sws_freeContext(m_scale);avcodec_free_context(&m_c
 void VideoEncoder::Open(Muxer& muxer,int width,int height,const std::string& name)
 {
     if(m_context)throw std::logic_error("视频编码器只能打开一次");
-    m_videotoolbox=name=="h264_videotoolbox";
     const char* converter=std::getenv("AIPLAYER_RECORD_CONVERTER");
     m_use_libyuv=converter && std::string(converter)=="libyuv";
 #ifndef AIPLAYER_HAVE_LIBYUV
@@ -18,28 +18,54 @@ void VideoEncoder::Open(Muxer& muxer,int width,int height,const std::string& nam
 #endif
     if(m_use_libyuv && (width%2 || height%2))
         throw std::runtime_error("libyuv 对照路径暂仅支持偶数宽高");
-    const auto* codec=avcodec_find_encoder_by_name(name.c_str());
-    if(!codec)throw std::runtime_error("视频编码器不可用: "+name);
-    m_context=avcodec_alloc_context3(codec);if(!m_context)throw std::bad_alloc();
-    m_context->width=width;m_context->height=height;m_context->pix_fmt=AV_PIX_FMT_YUV420P;
-    m_context->time_base={1,90000};m_context->framerate={30,1};m_context->gop_size=60;
-    if(m_videotoolbox) {
-        m_context->time_base={1,30};
-        // 起始对照码率：4K 约 40Mbps，1080p 约 10Mbps；不等同于 x264 CRF 20。
-        m_context->bit_rate=std::max<int64_t>(2000000,int64_t(width)*height*40000000/(3840*2160));
+    const bool automatic=name=="auto";
+    int ret=OpenCodec(width,height,automatic ? "h264_videotoolbox" : name);
+    if(ret<0 && automatic && ret!=AVERROR(ENOMEM)) {
+        char reason[AV_ERROR_MAX_STRING_SIZE]{};
+        av_strerror(ret,reason,sizeof(reason));
+        av_log(nullptr,AV_LOG_WARNING,
+               "AiPlayer: VideoToolbox encoder unavailable (%s); trying libx264.\n",reason);
+        ret=OpenCodec(width,height,"libx264");
     }
-    m_context->max_b_frames=0;m_context->flags|=AV_CODEC_FLAG_GLOBAL_HEADER;
+    CheckWrite(ret,"打开视频编码器");
+    av_log(m_context,AV_LOG_INFO,"AiPlayer: recording encoder=%s\n",m_context->codec->name);
+    // 只有选定的编码器初始化成功后才创建流，避免回退时留下多余流或错误时间基。
+    m_stream=muxer.AddStream(*m_context);m_muxer=&muxer;
+}
+int VideoEncoder::OpenCodec(int width,int height,const std::string& name)
+{
+    const auto* codec=avcodec_find_encoder_by_name(name.c_str());
+    if(!codec)return AVERROR_ENCODER_NOT_FOUND;
+    const auto release=[](AVCodecContext* context){avcodec_free_context(&context);};
+    std::unique_ptr<AVCodecContext,decltype(release)> context(avcodec_alloc_context3(codec),release);
+    if(!context)return AVERROR(ENOMEM);
+    const bool hardware=name=="h264_videotoolbox";
+    context->width=width;context->height=height;context->pix_fmt=AV_PIX_FMT_YUV420P;
+    context->time_base={1,90000};context->framerate={30,1};context->gop_size=60;
+    if(hardware) {
+        context->time_base={1,30};
+        // 保留已有硬编码率策略；与软件 CRF 20 不构成等画质对照。
+        context->bit_rate=std::max<int64_t>(2000000,int64_t(width)*height*40000000/(3840*2160));
+    }
+    context->max_b_frames=0;context->flags|=AV_CODEC_FLAG_GLOBAL_HEADER;
     AVDictionary* options=nullptr;
-    // 实时录制不做多帧前瞻，避免编码器内部积压整组 4K 图像。
-    if(name=="libx264"){av_dict_set(&options,"preset","veryfast",0);av_dict_set(&options,"crf","20",0);av_dict_set(&options,"tune","zerolatency",0);}
-    if(m_videotoolbox) {
+    if(name=="libx264") {
+        av_dict_set(&options,"preset","veryfast",0);
+        av_dict_set(&options,"crf","20",0);
+        av_dict_set(&options,"tune","zerolatency",0);
+    }
+    if(hardware) {
         av_dict_set(&options,"realtime","1",0);
         av_dict_set(&options,"allow_sw","0",0);
         av_dict_set(&options,"profile","high",0);
         av_dict_set(&options,"bf","0",0);
     }
-    int ret=avcodec_open2(m_context,codec,&options);av_dict_free(&options);CheckWrite(ret,"打开视频编码器");
-    m_stream=muxer.AddStream(*m_context);m_muxer=&muxer;
+    const int ret=avcodec_open2(context.get(),codec,&options);
+    av_dict_free(&options);
+    if(ret<0)return ret;
+    m_context=context.release();
+    m_videotoolbox=hardware;
+    return 0;
 }
 void VideoEncoder::Send(const AVFrame* rgba,int64_t pts,int64_t duration)
 {

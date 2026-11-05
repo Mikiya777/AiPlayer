@@ -245,8 +245,8 @@ void PlaybackController::StartRecording(const QUrl& path)
     const QSize size=m_video_output->GetRecordingSize();
     if(size.isEmpty()){ReportError(QStringLiteral("请等待视频画面出现后再录制"));return;}
     RecordingConfig config;config.m_path=path.toLocalFile().toStdString();config.m_source=m_source.toLocalFile().toStdString();
-    const auto encoder=qEnvironmentVariable("AIPLAYER_RECORD_ENCODER", "libx264");
-    if(encoder!="libx264" && encoder!="h264_videotoolbox") {
+    const auto encoder=qEnvironmentVariable("AIPLAYER_RECORD_ENCODER", "auto");
+    if(encoder!="auto" && encoder!="libx264" && encoder!="h264_videotoolbox") {
         ReportError(QStringLiteral("不支持的录制编码器配置"));return;
     }
     config.m_video_codec=encoder.toStdString();

@@ -14,6 +14,7 @@ public:
     void Open(Muxer& muxer,int width,int height,const std::string& codecName);
     void Send(const AVFrame* rgba,int64_t pts=0,int64_t duration=3000);
 private:
+    int OpenCodec(int width,int height,const std::string& codecName);
     Muxer* m_muxer=nullptr;
     AVCodecContext* m_context=nullptr;
     SwsContext* m_scale=nullptr;

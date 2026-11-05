@@ -19,7 +19,7 @@ int main(int argc, char** argv)
     };
 #ifdef Q_OS_MACOS
     setDefault("AIPLAYER_VIDEO_DECODER", "auto");
-    setDefault("AIPLAYER_RECORD_ENCODER", "h264_videotoolbox");
+    setDefault("AIPLAYER_RECORD_ENCODER", "auto");
 #endif
 #ifdef AIPLAYER_HAVE_LIBYUV
     setDefault("AIPLAYER_RECORD_CONVERTER", "libyuv");
