@@ -42,7 +42,7 @@ MOV、MP4 等是封装格式，内部的视频编码可能不同。实际播放�
 2. [VideoDecoder.cpp](core/src/decoder/VideoDecoder.cpp) 与 [AudioDecoder.cpp](core/src/decoder/AudioDecoder.cpp) 根据 `AVStream::codecpar->codec_id` 调用 `avcodec_find_decoder` 查找已注册的解码器，复制参数并初始化独立的 `AVCodecContext`。
 3. 后续统一通过 `avcodec_send_packet` / `avcodec_receive_frame` 送入压缩包、取出原始帧，上层无需为 H.264、HEVC、ProRes 等分别编写解码循环。这体现了 FFmpeg 在运行时选择具体实现、通过统一接口分派的机制；项目封装调用该机制，并未自行实现一套 C++ 虚函数解码器继承体系。
 
-启动脚本默认使用 `AIPLAYER_VIDEO_DECODER=auto`：优先 VideoToolbox，编码缺少硬解配置、设备/解码器初始化失败或像素格式协商无法使用硬解时回退软件解码，并记录原因。强制 `videotoolbox` 模式不回退，用于性能对照；硬解可用范围受 FFmpeg 版本、编码参数与设备支持情况限制。该策略不包含播放中任意解码错误后的重开及压缩包重放。需要固定软件路径时运行：
+macOS 应用默认使用 `AIPLAYER_VIDEO_DECODER=auto`：优先 VideoToolbox，编码缺少硬解配置、设备/解码器初始化失败或像素格式协商无法使用硬解时回退软件解码，并记录原因。强制 `videotoolbox` 模式不回退，用于性能对照；硬解可用范围受 FFmpeg 版本、编码参数与设备支持情况限制。该策略不包含播放中任意解码错误后的重开及压缩包重放。需要固定软件路径时运行：
 
 ```bash
 AIPLAYER_VIDEO_DECODER=software bash scripts/run-player.sh
@@ -106,7 +106,7 @@ flowchart TD
 
 ### 保留的改动与取舍
 
-- **硬件编解码：**优化启动脚本自动优先 VideoToolbox 解码，录制显式选择 VideoToolbox 编码。硬解后仍下载到 CPU、转 RGBA 并上传纹理；这不是硬件帧直通。硬编与旧软件编码的码率策略不同，CPU 降幅不作为等画质对比。
+- **硬件编解码：**macOS 应用默认自动优先 VideoToolbox 解码，录制选择 VideoToolbox 编码。硬解后仍下载到 CPU、转 RGBA 并上传纹理；这不是硬件帧直通。硬编与旧软件编码的码率策略不同，CPU 降幅不作为等画质对比。
 - **录制启动时序：**编码器和封装器就绪后才接收画面，以首张接受帧的媒体时间确定音视频共同起点，避免初始化期间填满录制队列。
 - **直接读回：**特效录制直接把 FBO 读入 RGBA 帧，以负行跨度处理上下方向，省去中间 QImage 转换和整帧复制。无特效且尺寸一致时共享原始帧，绕过读回。
 - **减少刷新：**贴纸模式仅在检测结果与对应图像准备好后请求刷新；播放仍以 5ms 定时器推进，进度条/时间文字最多约每 50ms 通知一次，暂停、跳转和结束时即时更新。
@@ -210,25 +210,34 @@ LIBYUV_SOURCE="$PWD/tmp/libyuv-source" \
 
 </details>
 
-### 4. 启动优化配置
+### 4. 启动应用
+
+本机开发构建完成后，在仓库目录统一使用以下命令启动：
+
+```bash
+open build/repro/app/AiPlayer.app
+```
+
+macOS 应用自身默认使用自动解码（优先 VideoToolbox）、VideoToolbox 编码与直接读回；编入 libyuv 时默认使用它做录制转换。`open` 和终端脚本使用同一组默认值，录制硬编当前不自动回退。
+
+需要查看终端日志或传入媒体路径时，使用同一应用的便捷入口：
 
 ```bash
 bash scripts/run-player.sh
-# 也可在命令末尾追加本地视频路径
 bash scripts/run-player.sh "/absolute/path/to/video.mp4"
 ```
 
-启动脚本选择自动解码（优先 VideoToolbox）、VideoToolbox 编码、libyuv 录制转换与直接读回。**直接双击或 `open` App 不会自动使用这组启动参数**，程序本身仍默认软件编解码、swscale 和原 QImage 读回；录制硬编当前不自动回退。
+应用默认值集中在 `qt/src/main.cpp`，启动脚本仅负责定位并执行应用。显式环境变量优先，性能对照时用终端脚本启动；`open` 可能复用已运行的实例，切换配置前请先退出播放器。
 
 <details>
 <summary>对照参数与常见问题</summary>
 
 | 环境变量 | 可选值 | 当前用途 |
 | --- | --- | --- |
-| `AIPLAYER_VIDEO_DECODER` | `auto` / `software` / `videotoolbox` | 启动脚本默认 auto，硬解不适用时软解；videotoolbox 为不回退的对照模式 |
-| `AIPLAYER_RECORD_ENCODER` | `libx264` / `h264_videotoolbox` | 启动脚本选择硬编 |
-| `AIPLAYER_RECORD_CONVERTER` | `swscale` / `libyuv` | 启动脚本选择 libyuv；当前录制转换限定同尺寸偶数宽高 RGBA，输出 BT.601 limited I420 |
-| `AIPLAYER_RECORD_READBACK` | `qimage` / `direct` / `pbo` | 启动脚本选择 direct；pbo 为可选实验 |
+| `AIPLAYER_VIDEO_DECODER` | `auto` / `software` / `videotoolbox` | macOS 应用默认 auto，硬解不适用时软解；videotoolbox 为不回退的对照模式 |
+| `AIPLAYER_RECORD_ENCODER` | `libx264` / `h264_videotoolbox` | macOS 应用默认硬编 |
+| `AIPLAYER_RECORD_CONVERTER` | `swscale` / `libyuv` | 编入 libyuv 时默认使用；当前录制转换限定同尺寸偶数宽高 RGBA，输出 BT.601 limited I420 |
+| `AIPLAYER_RECORD_READBACK` | `qimage` / `direct` / `pbo` | 应用默认 direct；pbo 为可选实验 |
 | `AIPLAYER_VIDEO_QUEUE_FRAMES` | `2` / `4` | 默认两帧，4 恢复旧容量 |
 | `AIPLAYER_FACE_INPUT` | `full` / `libyuv-960` / `960` | 有 libyuv 的构建默认小图；960 为 swscale 对照 |
 | `AIPLAYER_PROGRESS_NOTIFY` | `legacy` | 恢复旧进度通知频率；默认约50ms限频 |

@@ -13,6 +13,19 @@
 
 int main(int argc, char** argv)
 {
+    // 所有启动入口共享同一组默认值；显式环境变量仍可用于性能对照。
+    const auto setDefault = [](const char* name, const char* value) {
+        if (!qEnvironmentVariableIsSet(name)) qputenv(name, QByteArray(value));
+    };
+#ifdef Q_OS_MACOS
+    setDefault("AIPLAYER_VIDEO_DECODER", "auto");
+    setDefault("AIPLAYER_RECORD_ENCODER", "h264_videotoolbox");
+#endif
+#ifdef AIPLAYER_HAVE_LIBYUV
+    setDefault("AIPLAYER_RECORD_CONVERTER", "libyuv");
+#endif
+    setDefault("AIPLAYER_RECORD_READBACK", "direct");
+
     // QQuickFramebufferObject 依赖 OpenGL；必须在创建应用/窗口前确定后端。
     QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     QSurfaceFormat format;

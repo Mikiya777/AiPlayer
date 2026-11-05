@@ -10,6 +10,9 @@ qt_add_executable(aiplayer_app
     src/ui/MediaLibrary.h
 )
 target_include_directories(aiplayer_app PRIVATE src)
+if(AIPLAYER_LIBYUV_SOURCE)
+    target_compile_definitions(aiplayer_app PRIVATE AIPLAYER_HAVE_LIBYUV=1)
+endif()
 target_link_libraries(aiplayer_app PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Multimedia aiplayer_audio_output aiplayer_video_output)
 qt_add_resources(aiplayer_app "ui" PREFIX "/ui" BASE "qml"
     FILES qml/Main.qml qml/IconButton.qml qml/Glyph.qml qml/SeekSlider.qml qml/PlaybackSeekSlider.qml)
