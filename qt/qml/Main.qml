@@ -13,13 +13,36 @@ ApplicationWindow {
     property string mediaTitle: ""
     property bool gridMode: false
     property string section: "主屏幕"
+    property url selectedFolder: ""
+    property bool foldersExpanded: true
+    property bool fileManagerPage: section === "文件" && !selectedFolder.toString()
+    function showFileManager() { selectedFolder = ""; section = "文件"; foldersExpanded = true }
+    property var selectedFolderInfo: {
+        let folders = mediaLibrary.folders
+        for (let folder of folders)
+            if (folder.url.toString() === selectedFolder.toString()) return folder
+        return null
+    }
+    property var playlistFiles: {
+        let files = mediaLibrary.files // 订阅索引变化，文件夹扫描完成后重新取值。
+        return selectedFolder.toString() ? mediaLibrary.FilesForFolder(selectedFolder) : files
+    }
+    property var visibleFiles: selectedFolder.toString() ? playlistFiles : mediaLibrary.files
+    function selectFolder(url) { selectedFolder = url; section = "文件"; foldersExpanded = true }
+    function removeFolder(url) {
+        if (selectedFolder.toString() === url.toString()) selectedFolder = ""
+        mediaLibrary.RemoveFolder(url)
+    }
+    function renameFolder(url, name) {
+        folderRename.folderUrl = url; folderName.text = name; folderRename.open()
+    }
     property color accent: "#ff9b28"
     property bool dockMoved: false
     property bool controlsShown: true
     property var player: playbackController
     property bool wasFullScreen: false
     property int currentIndex: {
-        let files = mediaLibrary.files
+        let files = root.playlistFiles
         for (let i = 0; i < files.length; ++i)
             if (files[i].url.toString() === player.source.toString()) return i
         return -1
@@ -44,7 +67,7 @@ ApplicationWindow {
     }
     onPlayingPageChanged: {
         if (playingPage) { revealControls(); scheduleHide() }
-        else hideControls.stop()
+        else { hideControls.stop(); filterPanel.close() }
     }
     Timer {
         id: hideControls; interval: 700
@@ -67,8 +90,8 @@ ApplicationWindow {
     function skip(amount) {if(player.recording)return;player.position=Math.max(0,Math.min(player.duration,player.position+amount))}
     function nextFile(delta) {
         let next = currentIndex + delta
-        if (currentIndex >= 0 && next >= 0 && next < mediaLibrary.files.length)
-            openMedia(mediaLibrary.files[next].url)
+        if (currentIndex >= 0 && next >= 0 && next < root.playlistFiles.length)
+            openMedia(root.playlistFiles[next].url)
     }
     function removeFromPlaylist(url) {
         let isCurrent = root.playingPage && url.toString() === player.source.toString()
@@ -76,9 +99,9 @@ ApplicationWindow {
         let wasPlaying = player.playing
         mediaLibrary.RemoveFile(url)
         if (isCurrent) {
-            if (!mediaLibrary.files.length) backToLibrary()
+            if (!root.playlistFiles.length) backToLibrary()
             else {
-                openMedia(mediaLibrary.files[Math.min(index, mediaLibrary.files.length - 1)].url)
+                openMedia(root.playlistFiles[Math.min(index, root.playlistFiles.length - 1)].url)
                 if (!wasPlaying) player.Pause()
             }
         }
@@ -102,7 +125,11 @@ ApplicationWindow {
     FileDialog {
         id: filePicker; title: "选择视频或音频"; fileMode: FileDialog.OpenFiles
         nameFilters: ["媒体文件 (*.mp4 *.mkv *.mov *.m4v *.avi *.webm *.mp3 *.flac *.m4a)", "所有文件 (*)"]
-        onAccepted: {mediaLibrary.AddFiles(selectedFiles);if(selectedFiles.length)root.openMedia(selectedFiles[0])}
+        onAccepted: {
+            if (!selectedFiles.length) return
+            root.selectedFolder = ""; root.section = "主屏幕"
+            mediaLibrary.AddFiles(selectedFiles); root.openMedia(selectedFiles[0])
+        }
     }
     FileDialog {
         id:recordingPicker;title:"保存录制视频";fileMode:FileDialog.SaveFile
@@ -134,8 +161,10 @@ ApplicationWindow {
         palette.text:"#eeeeef";palette.windowText:"#eeeeef";palette.buttonText:"#eeeeef"
         onOpened:root.revealControls()
         onClosed:root.scheduleHide()
-        parent:Overlay.overlay
-        x:Math.max(8,root.width-width-24);y:70;width:260
+        parent:filterToggle
+        x:parent.width-width;y:parent.height+12;width:260
+        // 按钮在父项范围内，点击它不会先触发外部点击关闭再重新打开。
+        closePolicy:Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
         padding:18; modal:false
         background:Rectangle {color:"#ee24242b";radius:16;border.color:"#55555e"}
         contentItem:Column {
@@ -150,7 +179,67 @@ ApplicationWindow {
             ActionButton {text:"恢复原画";onClicked:{video.verticalFlip=false;video.grayscale=false;video.inverted=false;video.faceSticker=false}}
         }
     }
-    FolderDialog {id: folderPicker; title: "添加媒体文件夹"; onAccepted: {mediaLibrary.AddFolder(selectedFolder);root.section="文件"}}
+    FolderDialog {
+        id: folderPicker; title: "添加视频文件夹"
+        onAccepted: {
+            let added = mediaLibrary.AddFolder(selectedFolder)
+            if (added.toString()) root.showFileManager()
+        }
+    }
+    Connections {
+        target: mediaLibrary
+        function onFilesChanged() {
+            if (!root.selectedFolder.toString()) return
+            for (let folder of mediaLibrary.folders)
+                if (folder.url.toString() === root.selectedFolder.toString()) return
+            root.selectedFolder = ""
+        }
+    }
+    Dialog {
+        id: folderRename; title: "修改文件夹显示名称"; property url folderUrl: ""
+        anchors.centerIn: parent; width: 360; modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onOpened: { folderName.forceActiveFocus(); folderName.selectAll() }
+        onAccepted: mediaLibrary.RenameFolder(folderUrl, folderName.text)
+        ColumnLayout {
+            width: parent.width
+            TextField { id: folderName; Layout.fillWidth: true; maximumLength: 80; placeholderText: "文件夹名称" }
+            Label { text: "只修改媒体库中的名称，磁盘目录保持原样。"; color: "#9a9ca5"; font.pixelSize: 11 }
+        }
+    }
+    component ContextMenuItem: MenuItem {
+        id: menuEntry
+        implicitWidth: 240; implicitHeight: 40
+        leftPadding: 14; rightPadding: 14
+        contentItem: Text {
+            text: menuEntry.text; font.pixelSize: 13
+            color: menuEntry.enabled ? "#eeeeef" : "#777781"
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        background: Rectangle {
+            radius: 8
+            color: menuEntry.down ? "#55555f" : menuEntry.highlighted ? "#41414b" : "transparent"
+        }
+    }
+    component ContextMenu: Menu {
+        padding: 6; spacing: 3; width: 252
+        delegate: ContextMenuItem {}
+        palette.text: "#eeeeef"; palette.windowText: "#eeeeef"
+        background: Rectangle { color: "#ee24242b"; radius: 14; border.color: "#55555e" }
+    }
+    component ContextSeparator: MenuSeparator {
+        topPadding: 5; bottomPadding: 5; leftPadding: 8; rightPadding: 8
+        contentItem: Rectangle { implicitWidth: 224; implicitHeight: 1; color: "#484852" }
+    }
+    component FolderMenu: ContextMenu {
+        property url folderUrl
+        property string folderName
+        ContextMenuItem { text: "刷新视频列表"; onTriggered: mediaLibrary.RefreshFolder(folderUrl) }
+        ContextMenuItem { text: "修改显示名称"; onTriggered: root.renameFolder(folderUrl, folderName) }
+        ContextSeparator {}
+        ContextMenuItem { text: "移除文件夹（保留本地文件）"; onTriggered: root.removeFolder(folderUrl) }
+    }
     Connections {
         target: player
         function onErrorOccurred() { if (player.errorString) errorBox.open() }
@@ -170,18 +259,18 @@ ApplicationWindow {
             anchors.fill: parent; anchors.margins: 16; spacing: 12
             RowLayout {
                 Layout.fillWidth: true
-                Label { text: "播放列表 · " + mediaLibrary.files.length; color: "#eeeeee"; font.pixelSize: 18; Layout.fillWidth: true }
+                Label { text: "播放列表 · " + root.playlistFiles.length; color: "#eeeeee"; font.pixelSize: 18; Layout.fillWidth: true }
                 IconButton { objectName: "closePlaylist"; glyph: "close"; hint: "关闭列表"; onClicked: playlist.close() }
             }
             RowLayout {
                 ActionButton { text: "添加文件"; onClicked: playlistPicker.open() }
-                ActionButton { objectName: "clearPlaylist"; text: "清空"; enabled: mediaLibrary.files.length > 0; onClicked: root.clearPlaylist() }
+                ActionButton { objectName: "clearPlaylist"; text: "清空"; enabled: root.playlistFiles.length > 0; onClicked: root.clearPlaylist() }
             }
             Label { text: "按列表顺序播放，播完自动切换下一项"; color: "#9b9da5"; font.pixelSize: 11 }
             ListView {
                 id: playlistView; objectName: "playlistView"
                 Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 6
-                model: mediaLibrary.files; currentIndex: root.currentIndex
+                model: root.playlistFiles; currentIndex: root.currentIndex
                 onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
                 ScrollBar.vertical: ScrollBar {}
                 delegate: Rectangle {
@@ -208,7 +297,7 @@ ApplicationWindow {
                         glyph: "close"; hint: "从列表移除"; onClicked: root.removeFromPlaylist(queueRow.modelData.url)
                     }
                 }
-                Label { anchors.centerIn: parent; visible: mediaLibrary.files.length === 0; text: "播放列表为空"; color: "#999ba3" }
+                Label { anchors.centerIn: parent; visible: root.playlistFiles.length === 0; text: "播放列表为空"; color: "#999ba3" }
             }
         }
     }
@@ -247,13 +336,41 @@ ApplicationWindow {
                     model: [{label:"主屏幕",icon:"play"},{label:"媒体库",icon:"film"},{label:"文件",icon:"folder"}]
                     delegate: Rectangle {
                         required property var modelData
-                        Layout.fillWidth:true;implicitHeight:42;radius:10;color:root.section===modelData.label ? "#414145" : navMouse.containsMouse ? "#2d2d31" : "transparent"
+                        Layout.fillWidth:true;implicitHeight:42;radius:10;color:root.section===modelData.label && !root.selectedFolder.toString() ? "#414145" : navMouse.containsMouse ? "#2d2d31" : "transparent"
                         Row {anchors.verticalCenter:parent.verticalCenter;x:12;spacing:12;Glyph {width:20;height:20;name:modelData.icon;color:root.accent}Text{text:modelData.label;color:"#ededf0";font.pixelSize:14}}
-                        MouseArea {id:navMouse;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked:root.section=modelData.label}
+                        Text { visible: modelData.label === "文件"; anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter; text: root.foldersExpanded ? "⌄" : "›"; color: "#93959e" }
+                        MouseArea {id:navMouse;anchors.fill:parent;hoverEnabled:true;cursorShape:Qt.PointingHandCursor;onClicked: {
+                            let wasFileManager = root.fileManagerPage
+                            root.selectedFolder = ""
+                            root.section = modelData.label
+                            if (modelData.label === "文件") root.foldersExpanded = wasFileManager ? !root.foldersExpanded : true
+                        }}
                     }
                 }
-                ActionButton {text:"＋  添加文件夹";Layout.fillWidth:true;Layout.topMargin:12;onClicked:folderPicker.open()}
-                Item {Layout.fillHeight:true}
+                ListView {
+                    id: sidebarFolders; objectName: "sidebarFolders"
+                    Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 4
+                    model: root.foldersExpanded ? mediaLibrary.folders : []
+                    ScrollBar.vertical: ScrollBar {}
+                    delegate: Rectangle {
+                        id: sidebarFolder
+                        required property var modelData
+                        width: sidebarFolders.width; height: 38; radius: 8
+                        color: root.selectedFolder.toString() === modelData.url.toString() ? "#414145" : folderMouse.containsMouse ? "#2d2d31" : "transparent"
+                        Glyph { x: 18; anchors.verticalCenter: parent.verticalCenter; width: 17; height: 17; name: "folder"; color: root.accent }
+                        Text { x: 44; width: parent.width - 76; anchors.verticalCenter: parent.verticalCenter; text: modelData.name; elide: Text.ElideRight; color: "#ededf0"; font.pixelSize: 13 }
+                        MouseArea {
+                            id: folderMouse; anchors.fill: parent; hoverEnabled: true
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: mouse => { if (mouse.button === Qt.RightButton) sidebarMenu.popup(); else root.selectFolder(sidebarFolder.modelData.url) }
+                        }
+                        IconButton { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; width: 28; glyph: "more"; hint: "管理文件夹"; onClicked: sidebarMenu.popup() }
+                        FolderMenu { id: sidebarMenu; folderUrl: sidebarFolder.modelData.url; folderName: sidebarFolder.modelData.name }
+                        ToolTip.visible: folderMouse.containsMouse
+                        ToolTip.text: modelData.path
+                        ToolTip.delay: 800
+                    }
+                }
 
             }
         }
@@ -262,17 +379,21 @@ ApplicationWindow {
             Rectangle {
                 Layout.fillWidth:true;implicitHeight:70;color:"#17181a"
                 RowLayout {anchors.fill:parent;anchors.leftMargin:30;anchors.rightMargin:26
-                    Text {text:root.section;color:"#f1f1f3";font.pixelSize:17;font.weight:Font.DemiBold}
+                    IconButton { visible: !!root.selectedFolder.toString(); glyph: "back"; hint: "返回文件管理"; onClicked: root.showFileManager() }
+                    Text {text:root.selectedFolderInfo ? root.selectedFolderInfo.name : root.section;color:"#f1f1f3";font.pixelSize:17;font.weight:Font.DemiBold}
                     Item {Layout.fillWidth:true}
-                    IconButton {objectName:"viewToggle";glyph:root.gridMode?"list":"grid";hint:"切换列表 / 网格";onClicked:root.gridMode=!root.gridMode}
-                    ActionButton {text:"打开文件";primary:true;onClicked:filePicker.open()}
+                    IconButton {objectName:"viewToggle";visible: !root.fileManagerPage && root.section !== "媒体库";glyph:root.gridMode?"list":"grid";hint:"切换列表 / 网格";onClicked:root.gridMode=!root.gridMode}
+                    IconButton { visible: !!root.selectedFolderInfo; glyph: "more"; hint: "管理当前文件夹"; onClicked: currentFolderMenu.popup() }
+                    FolderMenu { id: currentFolderMenu; folderUrl: root.selectedFolder; folderName: root.selectedFolderInfo ? root.selectedFolderInfo.name : "" }
+                    ActionButton {objectName: "openFileSource"; visible: root.fileManagerPage; text:"打开文件";onClicked:filePicker.open()}
+                    ActionButton {objectName: "addFolderSource"; visible: root.fileManagerPage; text:"添加文件夹";primary:true;onClicked:folderPicker.open()}
                 }
                 Rectangle {anchors.bottom:parent.bottom;width:parent.width;height:1;color:"#292a2d"}
             }
             Item {
                 Layout.fillHeight:true;Layout.fillWidth:true
                 Column {
-                    visible:mediaLibrary.files.length===0;anchors.centerIn:parent;anchors.verticalCenterOffset:-24;width:Math.min(parent.width-70,560);spacing:0
+                    visible:root.section==="主屏幕" && mediaLibrary.files.length===0;anchors.centerIn:parent;anchors.verticalCenterOffset:-24;width:Math.min(parent.width-70,560);spacing:0
                     Item {
                         width:parent.width;height:164
                         Rectangle {anchors.centerIn:parent;width:154;height:154;radius:77;color:"#151719";border.color:"#232527"}
@@ -281,17 +402,20 @@ ApplicationWindow {
                     }
                     Text {width:parent.width;text:"你的私人影院，从这里开始";color:"#f3f3f5";font.pixelSize:27;font.weight:Font.DemiBold;horizontalAlignment:Text.AlignHCenter;topPadding:20}
                     Text {width:parent.width;text:"打开一部喜欢的影片，剩下的时间交给故事。";color:"#8c8d96";font.pixelSize:14;horizontalAlignment:Text.AlignHCenter;topPadding:15}
-                    Row {anchors.horizontalCenter:parent.horizontalCenter;spacing:12;topPadding:30;ActionButton {text:"选择媒体文件";primary:true;onClicked:filePicker.open()}ActionButton {text:"添加文件夹";onClicked:folderPicker.open()}}
+                    Row {anchors.horizontalCenter:parent.horizontalCenter;topPadding:30;ActionButton {text:"前往文件管理";primary:true;onClicked:root.showFileManager()}}
                     Text {width:parent.width;text:"也可以将文件拖放到这里";color:"#62646d";font.pixelSize:12;horizontalAlignment:Text.AlignHCenter;topPadding:24}
                     Text {width:parent.width;text:"MP4   ·   MOV   ·   MKV   ·   更多格式";color:"#4e5059";font.pixelSize:10;horizontalAlignment:Text.AlignHCenter;topPadding:35;font.letterSpacing:1}
                 }
                 ColumnLayout {
-                    anchors.fill:parent;anchors.margins:30;visible:mediaLibrary.files.length>0;spacing:18
+                    anchors.fill:parent;anchors.margins:30;visible:!root.fileManagerPage && root.section!=="媒体库" && (root.selectedFolder.toString() || mediaLibrary.files.length>0);spacing:18
                     RowLayout {Layout.fillWidth:true
-                        Column {spacing:6;Text{text:"所有媒体";color:"#f4f4f6";font.pixelSize:26;font.weight:Font.DemiBold}Text{text:mediaLibrary.files.length+" 个文件 · 保存在你的设备上";color:"#787b85";font.pixelSize:12}}
+                        Column {spacing:6
+                            Text {text:root.selectedFolderInfo ? root.selectedFolderInfo.name : "所有媒体";color:"#f4f4f6";font.pixelSize:26;font.weight:Font.DemiBold}
+                            Text {text:root.selectedFolderInfo ? (root.selectedFolderInfo.scanning ? "正在扫描视频…" : !root.selectedFolderInfo.available ? "文件夹不可用，请检查磁盘连接后刷新" : root.visibleFiles.length+" 个视频 · 包含子文件夹") : root.visibleFiles.length+" 个文件 · 保存在你的设备上";color:"#787b85";font.pixelSize:12}
+                        }
                         Item {Layout.fillWidth:true}
-                        ActionButton {text:"添加文件夹";onClicked:folderPicker.open()}
                     }
+                    Label { visible: root.visibleFiles.length === 0; text: root.selectedFolderInfo && root.selectedFolderInfo.scanning ? "扫描完成后会显示视频" : "这个文件夹还没有可显示的视频"; color: "#92959f" }
                     ScrollView {
                         id: mediaScroll
                         Layout.fillHeight:true;Layout.fillWidth:true;clip:true
@@ -303,7 +427,7 @@ ApplicationWindow {
                             // Use the viewport, never the implicit width of ScrollView's content.
                             width:mediaScroll.availableWidth;spacing:root.gridMode?20:0
                             Repeater {
-                                model:mediaLibrary.files
+                                model:root.visibleFiles
                                 delegate: Item {
                                     id: mediaRow; objectName: "mediaRow"
                                     required property var modelData
@@ -326,10 +450,95 @@ ApplicationWindow {
                                     }
                                     Rectangle {visible:!root.gridMode;anchors.bottom:parent.bottom;width:parent.width;height:1;color:"#24262a"}
                                     MouseArea {id:rowMouse;anchors.fill:parent;hoverEnabled:true;acceptedButtons:Qt.LeftButton | Qt.RightButton;cursorShape:Qt.PointingHandCursor;onClicked:mouse=>{if(mouse.button===Qt.RightButton)entryMenu.popup();else root.openMedia(mediaRow.modelData.url)}}
-                                    Menu {id:entryMenu;MenuItem {text:"从媒体库移除";onTriggered:root.removeFromPlaylist(mediaRow.modelData.url)}}
+                                    ContextMenu {id:entryMenu;width:200;ContextMenuItem {text:"从媒体库移除";onTriggered:root.removeFromPlaylist(mediaRow.modelData.url)}}
                                 }
                             }
                         }
+                    }
+                }
+                ColumnLayout {
+                    objectName: "fileManagerPage"
+                    anchors.fill: parent; anchors.margins: 30; spacing: 18; visible: root.fileManagerPage
+                    Label { text: mediaLibrary.folders.length + " 个文件夹"; color: "#9699a3"; font.pixelSize: 13 }
+                    GridView {
+                        id: folderSources; objectName: "folderSources"
+                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                        cellWidth: 190; cellHeight: 250
+                        model: mediaLibrary.folders
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: Item {
+                            id: sourceCard
+                            required property var modelData
+                            width: folderSources.cellWidth; height: folderSources.cellHeight
+                            Rectangle {
+                                x: 0; y: 0; width: parent.width - 18; height: 196; radius: 14
+                                color: sourceMouse.containsMouse ? "#303135" : "#232528"
+                                Glyph { anchors.centerIn: parent; width: 54; height: 54; name: "folder"; color: root.accent }
+                            }
+                            Text { x: 0; y: 208; width: parent.width - 20; text: modelData.name; elide: Text.ElideRight; color: "#eeeeef"; font.pixelSize: 14; font.weight: Font.DemiBold }
+                            Text { x: 0; y: 230; width: parent.width - 20; text: modelData.scanning ? "正在扫描…" : !modelData.available ? "文件夹不可用" : modelData.videoCount + " 个视频"; color: "#8c8f99"; font.pixelSize: 11 }
+                            MouseArea {
+                                id: sourceMouse; anchors.fill: parent; anchors.rightMargin: 18; hoverEnabled: true
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton; cursorShape: Qt.PointingHandCursor
+                                onClicked: mouse => { if (mouse.button === Qt.RightButton) sourceMenu.popup(); else root.selectFolder(sourceCard.modelData.url) }
+                            }
+                            IconButton { x: parent.width - 58; y: 6; glyph: "more"; hint: "管理文件夹"; onClicked: sourceMenu.popup() }
+                            FolderMenu { id: sourceMenu; folderUrl: sourceCard.modelData.url; folderName: sourceCard.modelData.name }
+                            ToolTip.visible: sourceMouse.containsMouse
+                            ToolTip.text: modelData.path
+                            ToolTip.delay: 800
+                        }
+                        Column {
+                            anchors.centerIn: parent; spacing: 14; visible: mediaLibrary.folders.length === 0
+                            Glyph { anchors.horizontalCenter: parent.horizontalCenter; width: 58; height: 58; name: "folder"; color: root.accent }
+                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: "还没有添加文件夹"; color: "#eeeeef"; font.pixelSize: 20 }
+                            Text { anchors.horizontalCenter: parent.horizontalCenter; text: "使用右上角的按钮打开文件或添加文件夹"; color: "#8c8f99"; font.pixelSize: 13 }
+                        }
+                    }
+                }
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 30; spacing: 18; visible: root.section === "媒体库"
+                    Text { text: "媒体库概览"; color: "#f4f4f6"; font.pixelSize: 26; font.weight: Font.DemiBold }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 14
+                        Repeater {
+                            model: [{label: "视频总数", value: mediaLibrary.videoCount}, {label: "已添加文件夹", value: mediaLibrary.folders.length}]
+                            delegate: Rectangle {
+                                required property var modelData
+                                Layout.fillWidth: true; implicitHeight: 86; radius: 12; color: "#292a2e"
+                                Column { x: 18; anchors.verticalCenter: parent.verticalCenter; spacing: 8
+                                    Text { text: modelData.value; color: root.accent; font.pixelSize: 27; font.weight: Font.DemiBold }
+                                    Text { text: modelData.label; color: "#a5a7b0"; font.pixelSize: 13 }
+                                }
+                            }
+                        }
+                    }
+                    Label { text: "统计已添加文件夹及子文件夹中的常见视频扩展名，重叠目录按文件去重。"; color: "#858893"; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    RowLayout {
+                        Text { text: "本地文件夹"; color: "#eeeeef"; font.pixelSize: 16; Layout.fillWidth: true }
+                        ActionButton { text: "管理文件来源"; onClicked: root.showFileManager() }
+                    }
+                    ListView {
+                        id: folderOverview; objectName: "folderOverview"
+                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 10
+                        model: mediaLibrary.folders
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: Rectangle {
+                            id: overviewRow
+                            required property var modelData
+                            width: folderOverview.width; height: 80; radius: 10; color: "#25262a"
+                            Button {
+                                anchors.fill: parent; anchors.rightMargin: 46; leftPadding: 18; background: Item {}
+                                contentItem: Column { spacing: 7
+                                    Text { text: overviewRow.modelData.name + " · " + (overviewRow.modelData.scanning ? "扫描中…" : overviewRow.modelData.videoCount + " 个视频"); color: "#ededf0"; font.pixelSize: 14 }
+                                    Text { width: parent.width; text: (overviewRow.modelData.available ? "" : "不可用 · ") + overviewRow.modelData.path; elide: Text.ElideMiddle; color: "#888b95"; font.pixelSize: 11 }
+                                }
+                                onClicked: root.selectFolder(overviewRow.modelData.url)
+                            }
+                            IconButton { anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; glyph: "more"; hint: "管理文件夹"; onClicked: overviewMenu.popup() }
+                            FolderMenu { id: overviewMenu; folderUrl: overviewRow.modelData.url; folderName: overviewRow.modelData.name }
+                        }
+                        Label { anchors.centerIn: parent; visible: mediaLibrary.folders.length === 0; text: "添加一个文件夹，开始整理你的视频"; color: "#91949e" }
                     }
                 }
                 DropArea {anchors.fill:parent;onDropped:drop=>{if(drop.hasUrls){mediaLibrary.AddFiles(drop.urls);drop.acceptProposedAction()}}
@@ -368,7 +577,7 @@ x:22;y:16;width:parent.width-44;spacing:12
             Text {visible:player.recording || player.savingRecording;text:player.savingRecording ? "正在保存…" : (player.playing ? "● 录制中 " : "● 录制已暂停 ")+root.time(player.recordingDuration);color:"#ff8989";font.pixelSize:13}
             ActionButton {objectName:"recordButton";text:player.recording ? "停止录制" : "录制";enabled:player.hasVideo && !player.savingRecording
                 onClicked:{if(player.recording)player.StopRecording();else recordingPicker.open()}}
-            ActionButton {objectName:"filterToggle";text:"滤镜";onClicked:filterPanel.open()}
+            ActionButton {id:filterToggle;objectName:"filterToggle";text:"滤镜";onClicked:{if(filterPanel.visible)filterPanel.close();else filterPanel.open()}}
             IconButton {glyph:"folder";hint:"打开其他文件";onClicked:filePicker.open()}
         }
         Item {
@@ -405,7 +614,7 @@ x:22;y:16;width:parent.width-44;spacing:12
                 IconButton {glyph:"rewind";enabled:!player.recording;hint:"后退 10 秒（←）";onClicked:root.skip(-10000)}
                 IconButton {objectName:"playPause";glyph:player.playing?"pause":"play";hint:"播放 / 暂停（空格）";implicitWidth:48;onClicked:player.TogglePlayback()}
                 IconButton {glyph:"forward";enabled:!player.recording;hint:"前进 10 秒（→）";onClicked:root.skip(10000)}
-                IconButton {glyph:"next";objectName:"nextTrack";hint:"下一首";enabled:root.currentIndex>=0 && root.currentIndex<mediaLibrary.files.length-1;onClicked:root.nextFile(1)}
+                IconButton {glyph:"next";objectName:"nextTrack";hint:"下一首";enabled:root.currentIndex>=0 && root.currentIndex<root.playlistFiles.length-1;onClicked:root.nextFile(1)}
             }
             RowLayout {
                 anchors.right:parent.right;anchors.rightMargin:20

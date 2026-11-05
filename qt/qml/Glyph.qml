@@ -15,6 +15,7 @@ Canvas {
         else if(name==="back") line([15,4,7,12,15,20])
         else if(name==="close") {line([6,6,18,18]);line([18,6,6,18])}
         else if(name==="plus") {line([12,5,12,19]);line([5,12,19,12])}
+        else if(name==="more") {for(let x=5;x<=19;x+=7){c.beginPath();c.arc(x,12,1.6,0,Math.PI*2);c.fill()}}
         else if(name==="folder") {line([3,19,3,5,9,5,11,8,21,8,21,19,3,19]);line([3,10,21,10])}
         else if(name==="search") {c.beginPath();c.arc(10,10,6,0,Math.PI*2);c.stroke();line([15,15,21,21])}
         else if(name==="grid") {for(let x=4;x<20;x+=10)for(let y=4;y<20;y+=10)c.strokeRect(x,y,6,6)}
