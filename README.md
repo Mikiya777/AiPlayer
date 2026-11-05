@@ -6,7 +6,7 @@
 
 **当前验证平台：macOS Apple Silicon。** 已完成本机独立目录源码构建与人工功能验收，尚未提供可直接安装的发行包。
 
-[功能](#功能) · [架构与代码入口](#架构与代码入口) · [性能优化](#性能优化) · [构建与运行](#构建与运行) · [已知边界](#录制行为与已知边界)
+[功能](#功能) · [媒体格式与解码选择](#媒体格式与解码选择) · [架构与代码入口](#架构与代码入口) · [性能优化](#性能优化) · [构建与运行](#构建与运行) · [已知边界](#录制行为与已知边界)
 
 ## 功能
 
@@ -20,6 +20,31 @@
 | 设备与异常处理 | 跟随系统默认音频输出设备切换；读取、处理、设备、渲染及录制错误反馈到界面 |
 
 2026-11-05 本机人工验收：播放、暂停恢复、跳转、开关贴纸、音画同步、短时录制与停止保存均正常；录制文件经 QuickTime 回放检查。此结果不替代多设备和长期稳定性测试。
+
+## 媒体格式与解码选择
+
+以下为当前固定版本 FFmpeg 构建中已启用的代表性能力，依据本地构建配置核对；未对表中每种格式及编码组合逐项完成播放验收。
+
+| 层次 | 已编入的能力 |
+| --- | --- |
+| 封装读取 | MOV/MP4/M4V、MKV/WebM、AVI、MPEG-TS、FLV、ASF 等 |
+| 常见视频软件解码 | H.264/AVC、H.265/HEVC、VP8、VP9、AV1、MPEG-2、MPEG-4 Part 2 |
+| 剪辑类视频软件解码 | ProRes、DNxHD、MJPEG、QuickTime Animation |
+| 常见音频解码 | AAC、MP3、PCM、ALAC、FLAC、Opus、Vorbis、AC-3/E-AC-3 |
+
+MOV、MP4 等是封装格式，内部的视频编码可能不同。实际播放还取决于编码参数、像素格式、色彩信息及当前选择的解码路径；当前显示链路面向 SDR，PQ/HLG HDR 会拒绝处理。
+
+**运行时选择与统一接口：**
+
+1. [Demuxer.cpp](core/src/reader/Demuxer.cpp) 通过 `avformat_open_input` 自动探测封装，再由 `avformat_find_stream_info` 获取流信息。
+2. [VideoDecoder.cpp](core/src/decoder/VideoDecoder.cpp) 与 [AudioDecoder.cpp](core/src/decoder/AudioDecoder.cpp) 根据 `AVStream::codecpar->codec_id` 调用 `avcodec_find_decoder` 查找已注册的解码器，复制参数并初始化独立的 `AVCodecContext`。
+3. 后续统一通过 `avcodec_send_packet` / `avcodec_receive_frame` 送入压缩包、取出原始帧，上层无需为 H.264、HEVC、ProRes 等分别编写解码循环。这体现了 FFmpeg 在运行时选择具体实现、通过统一接口分派的机制；项目封装调用该机制，并未自行实现一套 C++ 虚函数解码器继承体系。
+
+硬件/软件路径由 `AIPLAYER_VIDEO_DECODER` 显式选择。优化启动脚本默认使用 VideoToolbox，当前没有自动软件回退；其可用范围比表中的软件解码能力窄，且受 FFmpeg 版本与设备支持情况限制。需要软件路径时运行：
+
+```bash
+AIPLAYER_VIDEO_DECODER=software bash scripts/run-player.sh
+```
 
 ## 架构与代码入口
 
