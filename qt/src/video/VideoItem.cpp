@@ -50,6 +50,7 @@ public:
     m_raw_recording = !videoItem->GetFlip() && !videoItem->GetGray() &&
                       !videoItem->GetInvert() && !videoItem->GetSticker();
     m_renderer.SetFilters(videoItem->GetFlip(), videoItem->GetGray(), videoItem->GetInvert());
+    m_renderer.SetStickerStyle(videoItem->GetStickerStyle());
     m_renderer.SetFaces(videoItem->TakeFaces());
   }
 
@@ -177,15 +178,15 @@ public:
     }
     if (m_pbo.Pending()) update();
     if (Performance::Get().Active()) {
-      if(m_current_frame)
+      if (m_current_frame)
         Performance::Get().Add("memory_render_frame_payload_mib",
-          std::abs(static_cast<int64_t>(m_current_frame->linesize[0]))*m_current_frame->height/1048576.0);
-      const auto screenSize=framebufferObject()->size();
+                               std::abs(static_cast<int64_t>(m_current_frame->linesize[0])) * m_current_frame->height / 1048576.0);
+      const auto screenSize = framebufferObject()->size();
       Performance::Get().Add("memory_screen_fbo_color_nominal_mib",
-          static_cast<double>(screenSize.width())*screenSize.height()*4/1048576.0);
-      const auto captureSize=m_capture?m_capture->size():QSize();
+                             static_cast<double>(screenSize.width()) * screenSize.height() * 4 / 1048576.0);
+      const auto captureSize = m_capture ? m_capture->size() : QSize();
       Performance::Get().Add("memory_capture_fbo_color_nominal_mib",
-          m_capture ? static_cast<double>(captureSize.width())*captureSize.height()*4/1048576.0 : 0);
+                             m_capture ? static_cast<double>(captureSize.width()) * captureSize.height() * 4 / 1048576.0 : 0);
     }
     const QSize size = framebufferObject()->size();
     if (!m_renderer.Draw(size.width(), size.height()))
@@ -266,6 +267,15 @@ void VideoItem::SetSticker(bool value) {
   emit filterErrorChanged();
   if (value && !m_worker.joinable()) m_worker = std::thread(&VideoItem::DetectLoop, this);
   m_wake.notify_one();
+  emit filtersChanged();
+  update();
+}
+QStringList VideoItem::GetStickerNames() const {
+  return VideoRenderer::StickerNames();
+}
+void VideoItem::SetStickerStyle(int style) {
+  if (style == m_sticker_style || style < 0 || style >= VideoRenderer::StickerNames().size()) return;
+  m_sticker_style = style;
   emit filtersChanged();
   update();
 }

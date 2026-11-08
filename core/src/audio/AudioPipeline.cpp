@@ -148,14 +148,14 @@ int AudioPipeline::Process(const AVFrame &input, AVRational inputTimeBase, Frame
     AV_ROUND_UP);      // 向正无穷方向取整
   */
   const auto tolerance = std::max<std::int64_t>((static_cast<int64_t>(m_input_rate) + 999) / 1000,
-      av_rescale_q_rnd(1, inputTimeBase, inputSampleBase, AV_ROUND_UP));
+                                                av_rescale_q_rnd(1, inputTimeBase, inputSampleBase, AV_ROUND_UP));
 
   // 4.检查这一帧是否接得上上一帧
   if (m_has_timestamp && std::abs(static_cast<long double>(samplePts) - m_next_input_pts) > tolerance) {
     m_error = "音频时间戳不连续：实际=" + std::to_string(samplePts) +
-        "，预期=" + std::to_string(m_next_input_pts) +
-        "，容差=" + std::to_string(tolerance) + "（每秒 " + std::to_string(m_input_rate) +
-        " 个采样）；媒体时间=" + std::to_string(pts * av_q2d(inputTimeBase)) + " 秒";
+              "，预期=" + std::to_string(m_next_input_pts) +
+              "，容差=" + std::to_string(tolerance) + "（每秒 " + std::to_string(m_input_rate) +
+              " 个采样）；媒体时间=" + std::to_string(pts * av_q2d(inputTimeBase)) + " 秒";
     return AVERROR_INVALIDDATA;
   }
   //决定本帧使用哪个输入起点来推进时间轴

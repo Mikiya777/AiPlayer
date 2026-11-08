@@ -50,7 +50,9 @@ public:
 
   // 一个时间单位对应输出每声道的一个采样，时长=nb_samples/sample_rate。
   AVRational GetOutputTimeBase() const;
-  const std::string& GetError() const { return m_error; }
+  const std::string &GetError() const {
+    return m_error;
+  }
 
 private:
   int Convert(const uint8_t **input, int samples, FramePtr &output);

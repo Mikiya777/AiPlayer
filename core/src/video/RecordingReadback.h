@@ -53,14 +53,16 @@ inline FramePtr ReadRecordingFrame(int width, int height) {
 class RecordingPboReadback {
 public:
   RecordingPboReadback() = default;
-  RecordingPboReadback(const RecordingPboReadback&) = delete;
-  RecordingPboReadback& operator=(const RecordingPboReadback&) = delete;
-  ~RecordingPboReadback() { Reset(); }
+  RecordingPboReadback(const RecordingPboReadback &) = delete;
+  RecordingPboReadback &operator=(const RecordingPboReadback &) = delete;
+  ~RecordingPboReadback() {
+    Reset();
+  }
 
   void Reset() {
-    if (auto* context = QOpenGLContext::currentContext()) {
-      auto* gl = context->extraFunctions();
-      for (auto& slot : m_slots) {
+    if (auto *context = QOpenGLContext::currentContext()) {
+      auto *gl = context->extraFunctions();
+      for (auto &slot : m_slots) {
         if (slot.fence) gl->glDeleteSync(slot.fence);
         if (slot.buffer) gl->glDeleteBuffers(1, &slot.buffer);
       }
@@ -68,7 +70,9 @@ public:
     m_slots = {};
     m_head = m_count = 0;
   }
-  bool Pending() const { return m_count != 0; }
+  bool Pending() const {
+    return m_count != 0;
+  }
 
   bool Enqueue(int width, int height, double time) {
     if (m_count == m_slots.size()) {
@@ -79,8 +83,8 @@ public:
         width > std::numeric_limits<int>::max() / 4 ||
         size_t(height) > size_t(std::numeric_limits<GLsizeiptr>::max()) / (size_t(width) * 4))
       return false;
-    auto* gl = QOpenGLContext::currentContext()->extraFunctions();
-    auto& slot = m_slots[(m_head + m_count) % m_slots.size()];
+    auto *gl = QOpenGLContext::currentContext()->extraFunctions();
+    auto &slot = m_slots[(m_head + m_count) % m_slots.size()];
     PackState state(gl);
     if (!slot.buffer) gl->glGenBuffers(1, &slot.buffer);
     gl->glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.buffer);
@@ -105,48 +109,69 @@ public:
       slot.fence = nullptr;
       return false;
     }
-    slot.width = width; slot.height = height; slot.time = time;
+    slot.width = width;
+    slot.height = height;
+    slot.time = time;
     ++m_count;
     return true;
   }
 
-  FramePtr Take(double& time, bool& failed) {
+  FramePtr Take(double &time, bool &failed) {
     failed = false;
     if (!m_count) return {};
-    auto* gl = QOpenGLContext::currentContext()->extraFunctions();
-    auto& slot = m_slots[m_head];
+    auto *gl = QOpenGLContext::currentContext()->extraFunctions();
+    auto &slot = m_slots[m_head];
     const auto status = gl->glClientWaitSync(slot.fence, 0, 0);
     if (status == GL_TIMEOUT_EXPIRED) return {};
-    if (status == GL_WAIT_FAILED) { failed = true; return {}; }
+    if (status == GL_WAIT_FAILED) {
+      failed = true;
+      return {};
+    }
     PerformanceScope measure("record_pbo_map_copy");
     FramePtr frame(av_frame_alloc());
-    if (!frame) { failed = true; return {}; }
+    if (!frame) {
+      failed = true;
+      return {};
+    }
     frame->format = AV_PIX_FMT_RGBA;
-    frame->width = slot.width; frame->height = slot.height;
-    if (av_frame_get_buffer(frame.get(), 32) < 0) { failed = true; return {}; }
+    frame->width = slot.width;
+    frame->height = slot.height;
+    if (av_frame_get_buffer(frame.get(), 32) < 0) {
+      failed = true;
+      return {};
+    }
     PackState state(gl);
     gl->glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.buffer);
-    const auto* pixels = static_cast<const uint8_t*>(
+    const auto *pixels = static_cast<const uint8_t *>(
         gl->glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, slot.bytes, GL_MAP_READ_BIT));
-    if (!pixels) { failed = true; return {}; }
+    if (!pixels) {
+      failed = true;
+      return {};
+    }
     for (int y = 0; y < slot.height; ++y)
       std::memcpy(frame->data[0] + ptrdiff_t(y) * frame->linesize[0],
                   pixels + ptrdiff_t(y) * slot.width * 4, size_t(slot.width) * 4);
     const bool valid = gl->glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
     time = slot.time; // 保留采集时刻，不能使用映射时刻。
-    gl->glDeleteSync(slot.fence); slot.fence = nullptr;
-    m_head = (m_head + 1) % m_slots.size(); --m_count;
-    if (!valid) { failed = true; return {}; }
+    gl->glDeleteSync(slot.fence);
+    slot.fence = nullptr;
+    m_head = (m_head + 1) % m_slots.size();
+    --m_count;
+    if (!valid) {
+      failed = true;
+      return {};
+    }
     frame->data[0] += ptrdiff_t(frame->height - 1) * frame->linesize[0];
     frame->linesize[0] = -frame->linesize[0];
     Performance::Get().Add("record_pbo_completed_count", 1);
     return frame;
   }
+
 private:
   struct PackState {
-    QOpenGLExtraFunctions* gl;
+    QOpenGLExtraFunctions *gl;
     GLint alignment, row, skipRows, skipPixels, buffer, read;
-    explicit PackState(QOpenGLExtraFunctions* f) : gl(f) {
+    explicit PackState(QOpenGLExtraFunctions *f) : gl(f) {
       gl->glGetIntegerv(GL_PACK_ALIGNMENT, &alignment);
       gl->glGetIntegerv(GL_PACK_ROW_LENGTH, &row);
       gl->glGetIntegerv(GL_PACK_SKIP_ROWS, &skipRows);

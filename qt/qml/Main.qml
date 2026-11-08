@@ -174,6 +174,23 @@ ApplicationWindow {
             FilterCheck {objectName:"grayFilter";text:"黑白";checked:video.grayscale;onToggled:video.grayscale=checked}
             FilterCheck {objectName:"invertFilter";text:"颜色反相";checked:video.inverted;onToggled:video.inverted=checked}
             FilterCheck {objectName:"stickerFilter";text:"人脸贴纸";checked:video.faceSticker;onToggled:video.faceSticker=checked}
+            Grid {
+                id: stickerGrid
+                visible: video.faceSticker
+                width: 224; columns: 2; spacing: 6
+                Repeater {
+                    model: video.stickerNames
+                    delegate: ActionButton {
+                        required property int index
+                        required property string modelData
+                        objectName: "stickerStyle" + index
+                        width: (stickerGrid.width - stickerGrid.spacing) / 2
+                        implicitHeight: 32; leftPadding: 6; rightPadding: 6
+                        text: modelData; primary: video.stickerStyle === index
+                        onClicked: video.stickerStyle = index
+                    }
+                }
+            }
             Text {width:224;text:video.filterError;color:"#ffb5b5";wrapMode:Text.Wrap;visible:text.length>0}
             Text {width:224;text:"可叠加使用 · 贴纸跟随检测到的人脸";color:"#a9a9b2";font.pixelSize:12;wrapMode:Text.Wrap}
             ActionButton {text:"恢复原画";onClicked:{video.verticalFlip=false;video.grayscale=false;video.inverted=false;video.faceSticker=false}}

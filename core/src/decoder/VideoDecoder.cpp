@@ -66,7 +66,7 @@ int VideoDecoder::Open(const AVStream &stream) {
       }
       if (!supported) return AVERROR(ENOSYS);
       ret = av_hwdevice_ctx_create(&m_context->hw_device_ctx,
-                                  AV_HWDEVICE_TYPE_VIDEOTOOLBOX, nullptr, nullptr, 0);
+                                   AV_HWDEVICE_TYPE_VIDEOTOOLBOX, nullptr, nullptr, 0);
       if (ret < 0) return ret;
       m_context->opaque = this;
       m_context->get_format = &VideoDecoder::SelectHardwareFormat;

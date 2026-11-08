@@ -140,8 +140,8 @@ int AudioRenderer::Pump() {
     budget -= written;
     if (audio.m_offset == audio.m_bytes) m_queue.pop_front();
   }
-  Performance::Get().Add("audio_queue_mib",m_queued_bytes/1048576.0);
-  if(!m_input_finished && m_output->IsIdle())Performance::Get().Add("audio_idle_observations_count",1);
+  Performance::Get().Add("audio_queue_mib", m_queued_bytes / 1048576.0);
+  if (!m_input_finished && m_output->IsIdle()) Performance::Get().Add("audio_idle_observations_count", 1);
   RefreshClock();
   // 三个条件缺一不可：生产完成、应用队列空、设备缓冲已消耗。
   // Idle 也可能只是临时缺数据，未 EndInput 时不能当作播放结束。

@@ -32,7 +32,7 @@ public:
   int ReadPacket(AVPacket *packet);
 
   // 以整个媒体的时间轴定位，实际位置通常落在目标之前的关键帧。
-    // 非有限值、负数或超出 int64 微秒范围的时间返回 AVERROR(EINVAL)。
+  // 非有限值、负数或超出 int64 微秒范围的时间返回 AVERROR(EINVAL)。
   int Seek(double seconds);
 
 private:

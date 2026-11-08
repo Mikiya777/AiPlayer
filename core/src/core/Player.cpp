@@ -24,7 +24,7 @@ SyncConfig PlaybackSyncConfig() {
   SyncConfig config;
   // 播放器默认保留两帧 RGBA；4 可恢复旧容量进行对照。
   config.m_max_video_frames = 2;
-  const char* frames = std::getenv("AIPLAYER_VIDEO_QUEUE_FRAMES");
+  const char *frames = std::getenv("AIPLAYER_VIDEO_QUEUE_FRAMES");
   if (frames && std::strcmp(frames, "4") == 0) config.m_max_video_frames = 4;
   return config;
 }
@@ -282,7 +282,7 @@ int Player::Tick(TimedFrame &video) {
       return ret;
     }
   }
-  if(Performance::Get().Active())Performance::Get().m_audio_media_time.store(m_position,std::memory_order_relaxed);
+  if (Performance::Get().Active()) Performance::Get().m_audio_media_time.store(m_position, std::memory_order_relaxed);
   // 有音频时使用音频进度；纯视频/前导视频/音频尾后使用上述明确的外部时钟。
   int ret = m_sync.UpdateAudioClock(m_position, m_sync_generation);
   if (ret < 0) return FailCode(ret, "更新主时钟");
