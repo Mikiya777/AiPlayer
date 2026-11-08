@@ -14,12 +14,10 @@ set(AIPLAYER_CORE_SOURCES
     src/audio/AudioTempo.cpp
     src/audio/AudioRenderer.cpp
     src/video/VideoPipeline.cpp
-    src/effects/FilterChain.cpp
     src/writer/AudioEncoder.cpp
     src/writer/VideoEncoder.cpp
     src/writer/Muxer.cpp
     src/writer/FileWriter.cpp
-    src/platform/GLContext.cpp
 )
 
 add_library(aiplayer_core STATIC ${AIPLAYER_CORE_SOURCES})

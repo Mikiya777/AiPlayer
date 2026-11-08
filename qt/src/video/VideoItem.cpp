@@ -4,7 +4,6 @@
 #include "video/RecordingReadback.h"
 #include "writer/RecordingCadence.h"
 #include <QOpenGLFramebufferObject>
-#include <QOpenGLFramebufferObjectFormat>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QDebug>
@@ -194,9 +193,8 @@ public:
   }
 
   QOpenGLFramebufferObject *createFramebufferObject(const QSize &size) override {
-    QOpenGLFramebufferObjectFormat format;
-    format.setAttachment(QOpenGLFramebufferObject::CombinedDepthStencil);
-    return new QOpenGLFramebufferObject(size, format);
+    // 视频和贴纸只写颜色，显示 FBO 无需深度和模板附件。
+    return new QOpenGLFramebufferObject(size);
   }
 
 private:
