@@ -1,52 +1,25 @@
 # AiPlayer · 音视频特效播放器
 
-基于 **C++17、Qt Quick/QML、FFmpeg 和 OpenGL** 的本地桌面播放器，支持音画同步、保音调倍速、视频滤镜、人脸贴纸和 MP4 录制。
+AiPlayer 是基于 **C++17、Qt Quick/QML、FFmpeg 和 OpenGL** 的本地播放器。播放时可以叠加滤镜和人脸贴纸，并将合成画面与对应的源音频保存为 MP4。
 
-项目主要实现媒体链路的组织、资源管理、线程衔接、同步调度、特效合成与录制，并通过分段测量优化转换、刷新和缓存策略。人脸检测与关键点能力由 **InspireFace** 提供，不包含自研模型训练或大语言模型功能。
+**演示** · [播放器操作](https://www.bilibili.com/video/BV1Dp4b6PEtP/) · [特效录制成品](https://www.bilibili.com/video/BV1DW4b6eEVj/)
 
-**当前验证平台：macOS Apple Silicon。** 已完成本机独立目录源码构建与人工功能验收，尚未提供可直接安装的发行包。
+项目用 FFmpeg 解封装和编解码，按播放时钟调度视频帧，用 OpenGL 合成特效，并把编码与写盘交给录制线程。**InspireFace** 提供人脸检测和关键点，播放器负责检测任务调度、坐标映射与贴纸绘制。
 
-**视频演示：**[项目运行效果](https://www.bilibili.com/video/BV1Dp4b6PEtP/) · [录制输出效果](https://www.bilibili.com/video/BV1DW4b6eEVj/)
+**验证平台** · macOS Apple Silicon。仓库提供源码构建流程。
 
-[功能](#功能) · [媒体格式与解码选择](#媒体格式与解码选择) · [架构与代码入口](#架构与代码入口) · [性能优化](#性能优化) · [构建与运行](#构建与运行) · [已知边界](#录制行为与已知边界)
+[功能](#功能) · [架构与代码入口](#架构与代码入口) · [性能优化](#性能优化) · [构建与运行](#构建与运行) · [媒体格式](#媒体格式与解码选择) · [使用边界](#录制行为与已知边界)
 
 ## 功能
 
 | 功能 | 实现范围 |
 | --- | --- |
-| 本地播放 | 文件/文件夹播放列表、曲目切换、播完下一项 |
-| 播放控制 | 暂停恢复、进度跳转、音量、静音、全屏；0.5–2× 保音调倍速 |
-| 音画同步 | 以音频设备处理进度为主时钟，按视频 PTS 等待、交付和丢弃过时画面 |
-| 视频特效 | OpenGL 灰度、反相、垂直翻转；基于人脸关键点的动态贴纸 |
-| 画面录制 | H.264/AAC MP4，固定 30fps，保存特效画面和对应源音频 |
+| 本地媒体库 | 添加单个文件或文件夹，按文件夹浏览和统计视频，支持刷新、改显示名称和移除来源 |
+| 播放控制 | 暂停、跳转、全屏、列表连播和 0.5–2× 保音调倍速 |
+| 音画同步 | 有音频时用设备播放进度校准时钟，按视频 PTS 等待、显示或丢弃过时画面 |
+| 视频特效 | 灰度、反相、垂直翻转和四款可切换的人脸贴纸 |
+| 画面录制 | 固定 30 fps，视频编码为 H.264，有源音频时编码为 AAC，并封装成 MP4 |
 | 设备与异常处理 | 跟随系统默认音频输出设备切换；读取、处理、设备、渲染及录制错误反馈到界面 |
-
-2026-11-05 本机人工验收：播放、暂停恢复、跳转、开关贴纸、音画同步、短时录制与停止保存均正常；录制文件经 QuickTime 回放检查。此结果不替代多设备和长期稳定性测试。
-
-## 媒体格式与解码选择
-
-以下为当前固定版本 FFmpeg 构建中已启用的代表性能力，依据本地构建配置核对；未对表中每种格式及编码组合逐项完成播放验收。
-
-| 层次 | 已编入的能力 |
-| --- | --- |
-| 封装读取 | MOV/MP4/M4V、MKV/WebM、AVI、MPEG-TS、FLV、ASF 等 |
-| 常见视频软件解码 | H.264/AVC、H.265/HEVC、VP8、VP9、AV1、MPEG-2、MPEG-4 Part 2 |
-| 剪辑类视频软件解码 | ProRes、DNxHD、MJPEG、QuickTime Animation |
-| 常见音频解码 | AAC、MP3、PCM、ALAC、FLAC、Opus、Vorbis、AC-3/E-AC-3 |
-
-MOV、MP4 等是封装格式，内部的视频编码可能不同。实际播放还取决于编码参数、像素格式、色彩信息及当前选择的解码路径；当前显示链路面向 SDR，PQ/HLG HDR 会拒绝处理。
-
-**运行时选择与统一接口：**
-
-1. [Demuxer.cpp](core/src/reader/Demuxer.cpp) 通过 `avformat_open_input` 自动探测封装，再由 `avformat_find_stream_info` 获取流信息。
-2. [VideoDecoder.cpp](core/src/decoder/VideoDecoder.cpp) 与 [AudioDecoder.cpp](core/src/decoder/AudioDecoder.cpp) 根据 `AVStream::codecpar->codec_id` 调用 `avcodec_find_decoder` 查找已注册的解码器，复制参数并初始化独立的 `AVCodecContext`。
-3. 后续统一通过 `avcodec_send_packet` / `avcodec_receive_frame` 送入压缩包、取出原始帧，上层无需为 H.264、HEVC、ProRes 等分别编写解码循环。这体现了 FFmpeg 在运行时选择具体实现、通过统一接口分派的机制；项目封装调用该机制，并未自行实现一套 C++ 虚函数解码器继承体系。
-
-macOS 应用默认使用 `AIPLAYER_VIDEO_DECODER=auto`：优先 VideoToolbox，编码缺少硬解配置、设备/解码器初始化失败或像素格式协商无法使用硬解时回退软件解码，并记录原因。强制 `videotoolbox` 模式不回退，用于性能对照；硬解可用范围受 FFmpeg 版本、编码参数与设备支持情况限制。该策略不包含播放中任意解码错误后的重开及压缩包重放。需要固定软件路径时运行：
-
-```bash
-AIPLAYER_VIDEO_DECODER=software bash scripts/run-player.sh
-```
 
 ## 架构与代码入口
 
@@ -56,18 +29,18 @@ flowchart TD
     Source --> VR[视频读取与解码线程]
     AR --> PCM[PCM 重采样与按需变速]
     PCM --> Audio[有界音频缓存与 QAudioSink]
-    Audio --> Clock[音频主时钟]
+    Audio --> Clock[播放时钟]
     VR --> RGBA[视频帧转 CPU RGBA]
     RGBA --> Queue[两帧视频队列]
     Queue --> Sync[按主时钟调度]
     Clock --> Sync
     Sync --> Item[Qt 视频画布]
-    Item --> Face[可选检测线程：仅保留最新任务]
-    Face --> GL[原图与检测结果匹配后绘制]
-    Item --> GL
-    GL --> Screen[OpenGL 特效与显示]
-    Item --> Raw[无特效且尺寸一致：共享原始帧]
-    GL --> FBO[特效画面：FBO 读回]
+    Item -->|启用贴纸| Face[检测线程，仅保留最新待处理帧]
+    Face -->|原帧与检测结果| GL[OpenGL 绘制与特效合成]
+    Item -->|未启用贴纸| GL
+    GL --> Screen[显示 FBO]
+    Item -->|无特效且输出尺寸一致| Raw[共享原始 RGBA 帧引用]
+    GL -->|需要录制渲染结果| FBO[录制 FBO 与像素读回]
     Raw --> Writer[有界录制队列与编码线程]
     FBO --> Writer
     Source --> AudioExport[收尾时提取并编码对应源音频]
@@ -79,14 +52,15 @@ flowchart TD
 | --- | --- | --- |
 | 播放链路 | [Player.cpp](core/src/core/Player.cpp)、[FileReader.cpp](core/src/reader/FileReader.cpp) | 音视频独立生产；取消、错误报告和解码排空 |
 | 音频与同步 | [audio](core/src/audio)、[AVSynchronizer.cpp](core/src/sync/AVSynchronizer.cpp) | PCM 转换、音频设备时钟、等待/交付/丢帧；跳转后按代次拒绝旧数据 |
+| 媒体库 | [MediaLibrary.cpp](qt/src/ui/MediaLibrary.cpp)、[Main.qml](qt/qml/Main.qml) | 后台扫描文件夹，按来源浏览，保存本地媒体库配置 |
 | 界面调度 | [PlaybackController.cpp](qt/src/ui/PlaybackController.cpp)、[VideoItem.cpp](qt/src/video/VideoItem.cpp) | 播放推进与界面进度通知分频；检测结果准备好后请求刷新 |
-| 渲染与特效 | [VideoRenderer.cpp](core/src/video/VideoRenderer.cpp)、[FaceStickerFilter.cpp](core/src/effects/FaceStickerFilter.cpp) | GLSL/FBO、检测小图坐标映射、清屏归还大图存储 |
+| 渲染与特效 | [VideoRenderer.cpp](core/src/video/VideoRenderer.cpp)、[FaceStickerFilter.cpp](core/src/effects/FaceStickerFilter.cpp) | GLSL/FBO 合成、小图检测坐标映射、两槽位贴纸纹理缓存 |
 | 录制链路 | [FileWriter.cpp](core/src/writer/FileWriter.cpp)、[VideoEncoder.cpp](core/src/writer/VideoEncoder.cpp)、[RecordingReadback.h](core/src/video/RecordingReadback.h) | 编码就绪后接收帧、容量限制、共享帧/直接读回及可选 PBO |
 | 构建与依赖 | [conanfile.txt](conanfile.txt)、[conan.lock](conan.lock)、[FFmpeg 补丁](third_party/ffmpeg/patches/4.4.4-aiplayer-videotoolbox.patch) | 固定依赖解析和 libyuv 提交；补丁在 FFmpeg 源码构建阶段应用 |
 
-`AVFrame`、`AVPacket` 等资源使用配套释放器管理；跨线程保留帧时建立引用，不保存失效的借用地址。共享引用不等于端到端零拷贝。
+音视频读取线程各自打开媒体文件，以两次解封装换取独立的供给节奏。视频队列满时，音频读取可以继续。跨线程保留 `AVFrame` 时持有帧引用，`AVFrame`、`AVPacket` 的释放由 RAII 封装管理。
 
-音视频使用独立读取器，避免视频队列背压阻塞音频供给，代价是同一文件解封装两次。播放器控制与 `QAudioSink` 在 GUI 线程，OpenGL 在当前 Qt 渲染循环所属线程执行，检测和录制编码各自使用工作线程；当前 macOS/OpenGL 默认绘制也在 GUI 线程。
+播放器控制与 `QAudioSink` 在 GUI 线程，OpenGL 绘制随 Qt 渲染循环执行，人脸检测和录制编码各有工作线程。无音频或音频已经结束时，播放以单调时钟推进。
 
 ## 性能优化
 
@@ -106,14 +80,15 @@ flowchart TD
 
 ### 保留的改动与取舍
 
-- **硬件编解码：**macOS 应用默认自动优先 VideoToolbox 解码，录制优先 VideoToolbox 编码，不可用或初始化失败时回退 libx264。硬解后仍下载到 CPU、转 RGBA 并上传纹理；这不是硬件帧直通。硬编与旧软件编码的码率策略不同，CPU 降幅不作为等画质对比。
+- **硬件编解码。** 硬解帧经 CPU 转成 RGBA 后上传纹理。录制初始化优先尝试 VideoToolbox，失败后尝试 libx264。
 - **录制启动时序：**编码器和封装器就绪后才接收画面，以首张接受帧的媒体时间确定音视频共同起点，避免初始化期间填满录制队列。
 - **直接读回：**特效录制直接把 FBO 读入 RGBA 帧，以负行跨度处理上下方向，省去中间 QImage 转换和整帧复制。无特效且尺寸一致时共享原始帧，绕过读回。
 - **减少刷新：**贴纸模式仅在检测结果与对应图像准备好后请求刷新；播放仍以 5ms 定时器推进，进度条/时间文字最多约每 50ms 通知一次，暂停、跳转和结束时即时更新。
 - **小图检测：**使用 libyuv 将检测输入最长边缩至 960 像素，复用缓冲并映射回原图。输入缓冲约 31.6→2 MiB，播放和录制分辨率不变；本机素材人工检查未见贴纸位置、抖动或小脸识别明显退步。
+- **贴纸纹理缓存。** 四种样式共用两个纹理槽。命中时直接复用纹理，未命中时更新较久未使用的槽位。
 - **有界缓存与释放：**默认视频队列两帧，满时生产者等待；清屏将视频纹理存储缩至 1×1并归还 CPU 重排缓冲容量，保留小型绘制资源。
 - **显示 FBO 仅保留颜色附件。** 同一段 4K 素材的四轮贴纸加录制对照中，进程平均 footprint 约从 1102 MiB 降到 1077 MiB。四轮录制均成功保存，画面提交间隔 P95 未见一致退步。
-- **PBO 保留为实验：**降低了渲染回调耗时，但对流畅度的收益不稳定，组合对照平均 footprint 增加约 89 MiB，因此优化启动脚本仍选直接读回。
+- **录制读回取舍。** PBO 对照降低了渲染回调耗时，但流畅度收益不稳定，组合测试中进程平均 footprint 增加约 89 MiB。应用默认使用直接读回。
 
 <details>
 <summary>未采用的尝试与验证边界</summary>
@@ -255,6 +230,27 @@ bash scripts/run-player.sh "/absolute/path/to/video.mp4"
 
 </details>
 
+## 媒体格式与解码选择
+
+以下为当前固定版本 FFmpeg 构建中已启用的代表性能力，依据本地构建配置核对；未对表中每种格式及编码组合逐项完成播放验收。
+
+| 层次 | 已编入的能力 |
+| --- | --- |
+| 封装读取 | MOV/MP4/M4V、MKV/WebM、AVI、MPEG-TS、FLV、ASF 等 |
+| 常见视频软件解码 | H.264/AVC、H.265/HEVC、VP8、VP9、AV1、MPEG-2、MPEG-4 Part 2 |
+| 剪辑类视频软件解码 | ProRes、DNxHD、MJPEG、QuickTime Animation |
+| 常见音频解码 | AAC、MP3、PCM、ALAC、FLAC、Opus、Vorbis、AC-3/E-AC-3 |
+
+MOV、MP4 等是封装格式，内部的视频编码可能不同。实际播放还取决于编码参数、像素格式、色彩信息及当前选择的解码路径；当前显示链路面向 SDR，PQ/HLG HDR 会拒绝处理。
+
+**运行时选择与统一接口：**
+
+1. [Demuxer.cpp](core/src/reader/Demuxer.cpp) 通过 `avformat_open_input` 自动探测封装，再由 `avformat_find_stream_info` 获取流信息。
+2. [VideoDecoder.cpp](core/src/decoder/VideoDecoder.cpp) 与 [AudioDecoder.cpp](core/src/decoder/AudioDecoder.cpp) 根据 `AVStream::codecpar->codec_id` 调用 `avcodec_find_decoder` 查找已注册的解码器，复制参数并初始化独立的 `AVCodecContext`。
+3. 上层统一通过 `avcodec_send_packet` 和 `avcodec_receive_frame` 送入压缩包并取出解码帧，H.264、HEVC、ProRes 等共用同一套解码循环。具体实现由 FFmpeg 在运行时选择。
+
+macOS 默认优先尝试 VideoToolbox。编码缺少硬解配置、初始化失败或像素格式协商未选中硬解时，自动模式会使用软件解码。实际硬解范围取决于 FFmpeg 构建、编码参数和设备支持。可用模式见[构建与运行](#构建与运行)。
+
 ## 录制行为与已知边界
 
 - 录制的是视频画面，不包含 Qt 控件，不录制麦克风或系统声音；音频来自源文件对应片段。
@@ -265,7 +261,7 @@ bash scripts/run-player.sh "/absolute/path/to/video.mp4"
 
 仅面向可重复读取的本地 SDR 媒体；实际格式支持取决于 FFmpeg 构建。PQ/HLG HDR 当前会拒绝处理，未实现 HDR 色调映射、完整显示色彩管理、网络流播放或端到端零拷贝。
 
-开发构建已在本机完成依赖源码编译、独立目录构建与人工验收；尚未完成全新电脑/完全空缓存复现、多设备长期测试、Qt 运行库部署、签名与公证。普通播放约800MB、贴纸/录制约1GB等观察不作为统一性能基准，也不承诺所有设备实时4K录制。
+本机验收覆盖播放、暂停、跳转、贴纸和短时录制，并用 QuickTime 检查了录制成品。当前提供的是 macOS arm64 开发构建，验证范围为本机环境和指定测试素材。
 
 ## 第三方与许可
 
